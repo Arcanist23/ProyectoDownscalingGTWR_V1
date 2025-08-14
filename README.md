@@ -45,7 +45,7 @@ install.packages(c(
 ## 📊 Metodología
 La metodología consiste en tomar campos de viento de modelos WRF y aplicar la relación mediante un modelo de downcaling estadístico que recupero el factor de escala entre las mallas: 3km → 1km → 1/3km.
 - **Datos**: [Campos de Viento](https://github.com/Arcanist23/ProyectoDownscalingGTWR_V1/tree/main/data) de viento en mallas espaciales de 3 km y 1 km de resolución, almacenados en formato NetCDF.
-- **Modelo**: GTWR (Geographically and Temporally Weighted Regression) para capturar variaciones espaciales y temporales en la relación entre las dos resoluciones.
+- **Modelo**: GTWR (Geographically and Temporally Weighted Regression) para capturar variaciones espaciales y temporales en la relación entre las dos resoluciones. La ejecución del modelo está en la clase de R GTWRbase que contiene los método secuenciales para aplicar el modelo: 1) Constuir matriz de pesos $W$ con $X_{v_3}^{(3)}$; 2) Estimar $\beta$ no-paramétrico; 3) Predecir Campo de viento a resolución 1km.
 - **Análisis**:
   - Exploración y visualización de mallas espaciales.
   - Clasificación espacial FPC para distancias distribucionales
