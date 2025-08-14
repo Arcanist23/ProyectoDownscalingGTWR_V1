@@ -344,7 +344,8 @@ dimnames(ws1_incrementos_espaciales) <- list(
   tiempo = paste("t = ", 1:72)  # Nombres personalizados
 )
 
-ruta_analisis <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/fundamentos_y_metodologia/campos_viento_ej"
+ruta_base <- getwd()
+ruta_analisis <- file.path(ruta_base, "imagenes", "fundamentos_y_metodologia", "campos_viento_ej")
 
 if (!dir.exists(ruta_analisis)) {
   dir.create(ruta_analisis, recursive = TRUE)
@@ -397,10 +398,11 @@ graf_k_time <- function(array_3d, k_values, output_dir) {
 }
 
 # Directorio donde guardar imágenes
-ruta <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/campo_intensidad_viento"
+ruta_base <- getwd()
+ruta_analisis <- file.path(ruta_base, "imagenes", "campo_intensidad_viento")
 # Llamar a la función
-graf_k_time(ws1, 6, ruta)
-graf_k_time(ws3, 6, ruta)
+graf_k_time(ws1, 6, ruta_analisis)
+graf_k_time(ws3, 6, ruta_analisis)
 
 ```
 
@@ -578,86 +580,18 @@ rownames(posiciones_representantes) <- paste0("Cluster_", 1:3)
 print(posiciones_representantes)
 ```
 
-
-Graficamos las series centradas de los representantes de cada clase.
-
-```{r}
-# Extraer series temporales de los representantes
-series_representantes <- lapply(representantes, function(idx) {
-  ij <- indice_a_ij(idx, dim_lon = dim(ws1)[1], dim_lat = dim(ws1)[2])
-  serie <- ws1[ij["i"], ij["j"], ]
-  serie_centrada <- serie - mean(serie)  # Centrar respecto a su media
-  return(serie_centrada)
-})
-
-# Convertir a data.frame para ggplot
-df_series <- data.frame(
-  tiempo = 1:dim(ws1)[3],
-  Cluster_1 = series_representantes[[1]],
-  Cluster_2 = series_representantes[[2]],
-  Cluster_3 = series_representantes[[3]]
-)
-
-# Reestructurar para ggplot
-df_melt <- melt(df_series, id.vars = "tiempo", variable.name = "Cluster", value.name = "Anomalía")
-
-# Graficar series centradas
-ggplot(df_melt, aes(x = tiempo, y = Anomalía, color = Cluster)) +
-  geom_line(size = 1) +
-  theme_minimal() +
-  labs(title = "Series temporales centradas (medoides por cluster)",
-       x = "Tiempo", y = "Anomalía respecto a la media") +
-  theme(text = element_text(size = 12))
-```
-
-
-
-```{r, eval = FALSE}
-# install.packages("factoextra")
-library(cluster)
-library(clusterCrit) # para Calinski-Harabasz
-library(factoextra)  # opcional para visualización
-
-# Supongamos que D es tu matriz de disimilitud (objeto de clase 'dist')
-# 1. Escalamiento multidimensional clásico
-coord <- cmdscale(SD_WS1_DIST, k = 2)  # proyectar a 2 dimensiones, puedes probar con más
-
-# 2. Aplicar clustering jerárquico con agnes (enlace completo)
-hc <- agnes(SD_WS1_DIST, diss = TRUE, method = "complete")
-
-# 3. Probar diferentes cortes (por ejemplo, de 2 a 10 clusters)
-calinski_values <- c()
-
-for (k in 2:10) {
-  cluster_cut <- cutree(hc, k = k)
-  
-  # 4. Calcular índice de Calinski-Harabasz
-  ch <- intCriteria(as.matrix(coord), as.integer(cluster_cut), c("Calinski_Harabasz"))
-  calinski_values[k] <- ch$calinski_harabasz
-}
-
-# 5. Visualizar para determinar el óptimo
-plot(2:10, calinski_values[2:10], type = "b", pch = 19,
-     xlab = "Número de clusters", ylab = "Calinski-Harabasz",
-     main = "Selección del número óptimo de clusters")
-
-```
-
 ### Seleccion vecindades para análisis descriptivo
 Queremos tomar 6 vecindades en total, 1 para unicamente cada cluster y 3 vecindades de transición entre clusters: mar-valle, mar-montaña (si es posible) y valle-montaña. El fin es estudiar el impacto temporal de estas vecindades y diferencias las zonas espaciales con certeza. Luego se aplicará el mismo escenario para la primera parte del esquema de downscaling, en donde si el modelo estima bien estas vecindades a 1km, podemos plantear un paso a resolución 1/3. Tomaremos la clusterización a 1km "c3.1".
 
 ```{r}
 c4.1[c4.1=4] <- 3
 c3.1km.fixed <- c4.1
-# plot.c3.1
+
 levelplot(c3.1km.fixed, col.regions=terrain.colors(100), xlab="", ylab="", main="")
 54/3
 c3.1km.fixed[13:15, 31:33] # vecindad mar
 c3.1km.fixed[43:45, 46:48] # vecindad valle
 c3.1km.fixed[79:81, 22:24] # vecindad montaña
-# c3.1km.fixed[31:33, 51:53] # vecindad mar-valle
-# c3.1km.fixed[58:60, 19:21] # vecindad valle-montaña
-# c3.1km.fixed[35:37, 58:60] # vecindad mar-valle-montaña
 ```
 
 ### Análsis descriptivo vecindades
@@ -762,11 +696,8 @@ v_mar <- ws1[13:15, 31:33,] # vecindad mar
 v_valle <- ws1[43:45, 46:48,] # vecindad valle
 v_mont <- ws1[79:81, 22:24,] # vecindad montaña
 
-# c3.1[13:15, 31:33]
-# c3.1[43:45, 46:48]
-# c3.1[79:81, 22:24]
-
-ruta_analisis <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/analisis_descriptivo"
+ruta_base <- getwd()
+ruta_analisis <- file.path(ruta_base, "imagenes", "analisis_descriptivo")
 
 analisis_vecindad(v_mar, "mar", str_c(ruta_analisis, "/mar"))
 analisis_vecindad(v_valle, "valle", str_c(ruta_analisis, "/valle"))
@@ -1387,10 +1318,10 @@ W <- exp(-(D/h))
 lu_index1km <- ncvar_get(wrf1km, "LU_INDEX")
 lu_index1km_mean <- apply(lu_index1km, c(1, 2), mean)
 Beta_mtx_lu <- matrix(sapply(lu_index1km_mean, FUN = function(x){1 + (18-x)/18}), 90, 63)
-# levelplot(Beta_mtx_lu,col.regions=terrain.colors(200),xlab="",ylab="",main="Land-use index ireg 1km",margin=FALSE)
 
 # Simulación ejemplo
-ruta_sim <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/simulaciones"
+ruta_base <- getwd()
+ruta_sim <- file.path(ruta_base, "imagenes", "simulaciones")
 
 #variación de beta fija
 noise_var_vec <- c(0.005, 0.01, 0.03, 0.05, 0.1)
@@ -1873,10 +1804,11 @@ Xlb <- ws1
 D <- Eucl_dist_mtx/10000 + SD_dist_mtx/0.01
 h <- 0.02
 W <- exp(-(D/h))
-levelplot((matrix(W[200,],90,63, byrow = TRUE)),
-          colorkey=default_colorkey,xlab='',ylab='',main='')
+# levelplot((matrix(W[200,],90,63, byrow = TRUE)),
+#           colorkey=default_colorkey,xlab='',ylab='',main='')
 
-ruta_train <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/entrenamiento"
+ruta_base <- getwd()
+ruta_train <- file.path(ruta_base, "imagenes", "entrenamiento")
 
 base <- GTWRbase$new(Xb_vb=Xb_vb_bicub, Xlb=Xlb, W=W)
 beta <- base$estimar_beta()
@@ -2145,9 +2077,8 @@ graficar_vecindad_residuos <- function(residuos, i, j, output_dir = ".") {
 ```
 
 ```{r}
-
-residuos <- ws1 - pred
-output_dir <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/entrenamiento/residuos_temporales"
+residuos <- base$residuos
+output_dir <- file.path(ruta_train, "residuos_temporales")
 ki <- 15
 kj <- 16
 graficar_vecindad_residuos(residuos, i=(3*ki - 1), j=(3*kj - 1), output_dir)
@@ -2260,16 +2191,15 @@ graficar_comparacion_vecindad <- function(Xvb, ws1, pred, i_range, j_range, nomb
 
 ```{r}
 # Uso de la función
-output_dir_base <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/entrenamiento/analisis_temporal"
-
+output_dir <- file.path(ruta_train, "analisis_temporal")
 # Mar (y capturar métricas)
-metricas_mar <- graficar_comparacion_vecindad(Xvb, ws1, pred, c(13:15), c(31:33), "mar", file.path(output_dir_base, "mar"))
+metricas_mar <- graficar_comparacion_vecindad(Xvb, ws1, pred, c(13:15), c(31:33), "mar", file.path(output_dir, "mar"))
 
 # Valle
-metricas_valle <- graficar_comparacion_vecindad(Xvb, ws1, pred, c(41:43), c(11:13), "valle", file.path(output_dir_base, "valle"))
+metricas_valle <- graficar_comparacion_vecindad(Xvb, ws1, pred, c(41:43), c(11:13), "valle", file.path(output_dir, "valle"))
 
 # Montaña
-metricas_mont <- graficar_comparacion_vecindad(Xvb, ws1, pred, c(77:79), c(20:22), "mont", file.path(output_dir_base, "mont"))
+metricas_mont <- graficar_comparacion_vecindad(Xvb, ws1, pred, c(77:79), c(20:22), "mont", file.path(output_dir, "mont"))
 
 agregar_sij <- function(metricas_df) {
   metricas_df$Punto <- paste0("$s_{", metricas_df$Punto_i, metricas_df$Punto_j, "}$")
@@ -2312,28 +2242,12 @@ imprimir_tabla_latex(tabla_mont, "montaña")
 
 
 ```{r}
-ruta_analisis <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/entrenamiento/residuos_temporales"
+ruta_analisis <- file.path(ruta_train, "residuos_temporales")
 y_min <- min(res_mar, res_valle, res_mont)
 y_max <- max(res_mar, res_valle, res_mont)
 analisis_vecindad(res_mar, "mar", str_c(ruta_analisis, "/mar"), ylim_i = y_min, ylim_f = y_max)
 analisis_vecindad(res_valle, "valle", str_c(ruta_analisis, "/valle"), ylim_i = y_min, ylim_f = y_max)
 analisis_vecindad(res_mont, "mont", str_c(ruta_analisis, "/mont"), ylim_i = y_min, ylim_f = y_max)
-```
-
-
-#### Clasificación de residuos FPC
-
-```{r}
-sd_red <- apply(base$residuos, c(1, 2), sd)
-sd_vector <- as.vector(sd_red)
-SD_RES_DIST <- outer(sd_vector, sd_vector, FUN = function(x, y) abs(x - y))
-
-library(cluster)
-hc_res <- agnes(SD_RES_DIST, diss = TRUE, method = "complete")
-
-cluster_3_res <- cutree(as.hclust(hc_res), k = 4)
-levelplot(matrix(cluster_3_res, nrow = dim(ws1)[1], ncol = dim(ws1)[2]),
-          col.regions=terrain.colors(100),xlab="",ylab="", main="Clasificación FCP 1km k=3")
 ```
 
 
@@ -2472,7 +2386,8 @@ Xb_vb <- get_xvb(ws1)
 B_mtx <- base$B_mtx
 
 # Simulación ejemplo
-ruta_pred <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/predictions"
+ruta_pred <- file.path(ruta_base, "imagenes", "predictions")
+
 methods <- c("knn","bicubica")
 for(metodo in methods){
   Predictor <- GTWRPredictor$new(Xb_vb = Xb_vb, B_mtx = B_mtx)
@@ -2581,10 +2496,9 @@ graficas_comparacion_campos_downscaling <- function(X3, X1, X1_3, centros_i, cen
 ```
 
 ```{r}
-output_dir_results <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/comparacion_downscaling"
-
+ruta_comp <- file.path(ruta_base, "imagenes", "comparacion_downscaling")
 centros_i <- c(14,44,80)
 centros_j <- c(32,47,23)
-graficas_comparacion_campos_downscaling(ws3, ws1, Predictor$Xlb_pred, centros_i, centros_j, output_dir = output_dir_results)
+graficas_comparacion_campos_downscaling(ws3, ws1, Predictor$Xlb_pred, centros_i, centros_j, output_dir = ruta_comp)
 ```
 
