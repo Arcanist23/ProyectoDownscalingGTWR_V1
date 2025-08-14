@@ -1,0 +1,2590 @@
+---
+title: "Taller de Título: Downscaling estadístico espacio-temporal con modelo GTWR en campos de intensidad del viento en la región de Valparaíso"
+author: "Alonso Lagos"
+date: "2025-08-15"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Librerías asociadas a la ejecución del notebook
+
+```{r}
+#LIBRERIAS NECESARIAS
+lapply(c("ncdf4", "tidyverse", "conflicted", "dplyr", "fields", "maps", "class",
+         "lattice", "latticeExtra", "stringr", "FNN", "scales", "ggplot2",
+         "reshape2", "RColorBrewer", "gridExtra", "GGally", "psych", "viridis", "grid",
+         "ggpubr", "ggcorrplot", "xtable", "bigmemory", "geosphere"), library, character.only = TRUE)
+```
+
+
+# Modelo regresión ponderada
+
+$$X_i^{(1)}=\beta _{i}W_{i} X_{v_3(i)}^{(3)} + \varepsilon _{i}$$ para $i=1, \cdots, n_1$ hasta, con $n_1=5670$ igual a la cantidad de pixeles de la malla espacial a resolución 1km.
+
+## Exploración mallas de 1km y 3km
+```{r}
+# Configuraciones para gráficas levelplot()
+trellis.par.set(list(
+        axis.text = list(cex = 1.8),
+        par.main.text = list(cex = 1.8),
+        par.xlab.text = list(cex = 1.8),
+        par.ylab.text = list(cex = 1.8)
+      ))
+
+default_colorkey <- list(
+                          width = 2.0,
+                          labels = list(cex = 1.5)
+                          )
+```
+
+```{r}
+# Cargamos datos del modelo WRF
+wrf3km <- nc_open("data/wrf_ncl_incendio_20230902_d03_3km.nc")
+wrf1km <- nc_open("data/wrf_ncl_incendio_20230902_d04_1km.nc")
+attributes(wrf3km$var)
+
+#Guardamos las variables espaciales y temporales
+ws3km <- ncvar_get(wrf3km, "WSPEED")
+ws1km <- ncvar_get(wrf1km, "WSPEED")
+time <- ncvar_get(wrf1km, "Times")
+lat3km <- ncvar_get(wrf3km, "XLAT")
+lat1km <- ncvar_get(wrf1km, "XLAT")
+long3km <- ncvar_get(wrf3km, "XLONG")
+long1km <- ncvar_get(wrf1km, "XLONG")
+```
+
+
+```{r}
+#Visualización de las mallas superpuestas
+fig10 <- levelplot(ws1km[,,50],col.regions=terrain.colors(100),xlab="",ylab="",main="Intesidad del viento 1km",margin=FALSE)
+fig11 <- levelplot(ws3km[20:49,20:40,50],col.regions=terrain.colors(100),xlab="",ylab="",main="Intesidad del viento 3km",margin=FALSE)
+grid.arrange(fig11,fig10, ncol=2)
+
+ws1 <- ws1km[,,2:73]
+ws3 <- ws3km[20:49,20:40,2:73]
+
+dimnames(ws1) <- list(
+  columna = NULL,
+  fila = NULL,
+  tiempo = paste("t = ", 1:72)  # Nombres personalizados
+)
+dimnames(ws3) <- list(
+  columna = NULL,
+  fila = NULL,
+  tiempo = paste("t = ", 1:72)  # Nombres personalizados
+)
+
+#Guardamos campos de viento de ejemplo en t=20,50.
+ruta_base <- getwd()
+ruta_analisis <- file.path(ruta_base, "imagenes", "fundamentos_y_metodologia", "campos_viento_ej")
+if (!dir.exists(ruta_analisis)) {
+  dir.create(ruta_analisis, recursive = TRUE)
+}
+
+png(
+  filename = str_c(ruta_analisis, '/campo1km.png'),  # Ruta + nombre
+  width = 5000,              # Ancho en píxeles
+  height = 5000,             # Alto en píxeles
+  res = 600                  # Resolución (300 dpi para calidad)
+)
+levelplot(
+  ws1,
+  layout = c(3, 3),  # 4 filas, 3 columnas (para 12 meses)
+  # col.regions = hcl.colors(100, "RdYlBu"),
+  col.regions = terrain.colors(100, alpha = 0.95),
+  main = "Evolución temporal del campo de viento a 1 km en horas",
+  xlab = "Longitud",
+  ylab = "Latitud",
+  scales = list(draw = FALSE),
+  strip = strip.custom(
+    factor.levels = dimnames(ws1)[[3]]  # "T = 1", "T = 2", ...
+  ),
+  index.cond = list(order(1:9))
+)
+dev.off()
+
+png(
+  filename = str_c(ruta_analisis, '/campo3km.png'),  # Ruta + nombre
+  width = 5000,              # Ancho en píxeles
+  height = 5000,             # Alto en píxeles
+  res = 600                  # Resolución (300 dpi para calidad)
+)
+levelplot(
+  ws3,
+  layout = c(3, 3),  # 4 filas, 3 columnas (para 12 meses)
+  # col.regions = hcl.colors(100, "RdYlBu"),
+  col.regions = terrain.colors(100, alpha = 0.95),
+  main = "Evolución temporal del campo de viento a 3 km en horas",
+  xlab = "Longitud",
+  ylab = "Latitud",
+  scales = list(draw = FALSE),
+  strip = strip.custom(
+    factor.levels = dimnames(ws3)[[3]]  # "T = 1", "T = 2", ...
+  ),
+  index.cond = list(order(1:9))
+)
+dev.off()
+```
+
+```{r}
+# Crear data.frame para ggplot
+df <- data.frame(
+  tiempo = 1:72,  # Eje X (puedes usar fechas reales)
+  valor = ws1[30,30,]              # Eje Y (valores promediados)
+)
+
+# Gráfico personalizado
+ggplot(df, aes(x = tiempo, y = valor)) +
+  geom_line(linewidth = 1, color = "#1f78b4") +  # Línea principal
+  geom_point(size = 2, color = "#1f78b4") +      # Puntos destacados
+  # geom_smooth(method = "loess", se = FALSE, color = "#33a02c", linetype = "dashed") +  # Tendencia
+  labs(
+    title = "Serie Temporal del Campo de Viento",
+    x = "Tiempo (h)",
+    y = "Intensidad del Viento (m/s)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    panel.grid.major = element_line(color = "gray90"),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(color = "gray30")
+  ) +
+  scale_x_continuous(breaks = pretty_breaks(n = 10)) +  # Eje X con 10 breaks
+  scale_y_continuous(limits = c(min(df$valor), max(df$valor)))  # Ajustar límites Y
+```
+
+
+
+### Geografía
+
+Imagen georeferenciada de la intersección de la malla 1km y 3km en el
+estudio. El primer chuck solo se puede ejecutar con un API de google.
+
+```{r}
+library(ggmap)
+library(tibble)
+library(RgoogleMaps)
+
+register_google(key="AIzaSyCf9JLtl0uk1EZ9S0SGAb8c_3JibsITQDw")
+#valparaiso
+valp <- geocode("Valparaíso, Chile")
+#campo a 1km
+valpo <- ggmap(get_map(c(-33.04752,-71.44249), maptype = "terrain")) 
+valpo
+coords_cuad <- c(c(min(lat1km), max(lat1km)), c(min(long1km), max(long1km)))
+bbox <- GetMap.bbox(coords_cuad)
+map <- get_map(location = c(bbox$lat.center, bbox$lon.center),zoom=9,maptype = "terrain")
+
+ggmap(map) +
+  geom_segment(x=min(long1km),y=min(lat1km),xend=min(long1km),yend=max(lat1km),color="red")+
+  geom_segment(x=max(long1km),y=min(lat1km),xend=max(long1km),yend=max(lat1km),color="red")+
+  geom_segment(x=min(long1km),y=min(lat1km),xend=max(long1km),yend=min(lat1km),color="red")+
+  geom_segment(x=min(long1km),y=max(lat1km),xend=max(long1km),yend=max(lat1km),color="red")+
+  geom_point()
+
+```
+
+Gráfica del dominio espacial con división comunal.
+
+```{r mapa zona valparaiso}
+library(leaflet)
+library(sf)
+library(dplyr)
+
+# Cargar shapefile de comunas
+comunas <- st_read("C:/Users/alonso/Desktop/Taller de Título/Comunas/comunas.shp")
+
+# Filtrar solo Región de Valparaíso
+valparaiso_comunas <- comunas %>%
+  dplyr::filter(Region == "Región de Valparaíso")
+
+# Crear polígono (cuadrado) de bounding box
+bbox_coords <- matrix(c(
+  min(long1km), min(lat1km),
+  max(long1km), min(lat1km),
+  max(long1km), max(lat1km),
+  min(long1km), max(lat1km),
+  min(long1km), min(lat1km)  # cerrar el polígono
+), ncol = 2, byrow = TRUE)
+
+poly <- st_polygon(list(bbox_coords)) %>%
+  st_sfc(crs = 4326) %>%
+  st_sf()
+
+# Calcular centroides ahora que las comunas están en el CRS correcto
+# centroides <- st_centroid(valparaiso_comunas)
+centroides <- st_point_on_surface(valparaiso_comunas)
+centroides <- st_transform(centroides, crs = 4326)
+coords <- st_coordinates(centroides)
+centroides$lon <- coords[, 1]
+centroides$lat <- coords[, 2]
+
+
+# Transformar a CRS 4326 (lat/lon)
+valparaiso_comunas <- st_transform(valparaiso_comunas, crs = 4326)
+
+# Mapa interactivo
+leaflet() %>%
+  addProviderTiles(providers$Esri.WorldImagery) %>%
+  addPolygons(data = valparaiso_comunas, color = "blue", fill = FALSE,
+              weight = 1, label = ~Comuna) %>%
+  addPolygons(data = poly, color = "red", weight = 2, fill = FALSE) %>%
+  addLabelOnlyMarkers(data = centroides,
+                      lng = ~lon, lat = ~lat,
+                      label = ~Comuna,
+                      labelOptions = labelOptions(noHide = TRUE, 
+                                                  direction = 'center',
+                                                  textOnly = TRUE,
+                                                  style = list("color" = "blue", 
+                                                               "font-size" = "12px",
+                                                               "font-weight" = "bold"))) %>%
+  setView(lng = -71.4, lat = -33.05, zoom = 10)
+
+```
+
+## Incrementos espaciales
+
+Buscamos identificar y medir la variación de las series de tiempo según
+su zona geográfica, para esto tomaremos los incrementos espaciales
+$\tilde{X}^{(1)}_i=X^{(1)}_i-\tilde{\mu}_i$, donde
+$\tilde{\mu}_i$ es el promedio de las series de tiempo
+de los vecinos mas cercanos de primer orden. Implementamos el
+siguiente algoritmo para determinar los incrementos espaciales de las
+mallas.
+
+```{r spatial_increments}
+spatial_increments <- function(M){
+  n = dim(M)[1]
+  m = dim(M)[2]
+  M2 = M
+  #interior de la grilla
+  for (i in 2:(n-1)) { for(j in 2:(m-1)){
+    target <- M[i,j,]
+    v1=M[i-1,j-1,]
+    v2=M[i-1,j,]
+    v3=M[i-1,j+1,]
+    v4=M[i,j-1,]
+    v5=M[i,j+1,]
+    v6=M[i+1,j-1,]
+    v7=M[i+1,j,]
+    v8=M[i+1,j+1,]
+    v_mean = rowMeans(cbind(v1,v2,v3,v4,v5,v6,v7,v8))
+    M2[i,j,] <- target-v_mean
+  }}
+  #bordes de la grilla salvo extremos
+  for (j in 2:(m-1)) { #borde izquierdo
+    target <- M[1,j,]
+    v1=M[1,j-1,]
+    v2=M[1,j+1,]
+    v3=M[2,j-1,]
+    v4=M[2,j,]
+    v5=M[2,j+1,]
+    v_mean = rowMeans(cbind(v1,v2,v3,v4,v5))
+    M2[1,j,] <- target-v_mean
+  }
+  for (j in 2:(m-1)) { #borde derecho
+    target <- M[n,j,]
+    v1=M[n-1,j+1,]
+    v2=M[n-1,j,]
+    v3=M[n-1,j-1,]
+    v4=M[n,j-1,]
+    v5=M[n,j+1,]
+    v_mean = rowMeans(cbind(v1,v2,v3,v4,v5))
+    M2[n,j,] <- target-v_mean
+  }
+  for (i in 2:(n-1)) { #borde superior
+    target <- M[i,1,]
+    v1=M[i+1,1,]
+    v2=M[i-1,1,]
+    v3=M[i-1,2,]
+    v4=M[i,2,]
+    v5=M[i+1,2,]
+    v_mean = rowMeans(cbind(v1,v2,v3,v4,v5))
+    M2[i,1,] <- target-v_mean
+  }
+  for (i in 2:(n-1)) { #borde inferior
+    target <- M[i,m,]
+    v1=M[i+1,m,]
+    v2=M[i-1,m,]
+    v3=M[i-1,m-1,]
+    v4=M[i,m-1,]
+    v5=M[i+1,m-1,]
+    v_mean = rowMeans(cbind(v1,v2,v3,v4,v5))
+    M2[i,m,] <- target-v_mean
+  }
+  
+  #esquinas de la grilla
+  M2[1,1,] <- M[1,1,] - rowMeans(cbind(M[1,2,],M[2,1,],M[2,2,]))
+  M2[1,m,] <- M[1,m,] - rowMeans(cbind(M[1,m-1,],M[2,m,],M[2,m-1,]))
+  M2[n,1,] <- M[n,1,] - rowMeans(cbind(M[n,2,],M[n-1,1,],M[n-1,2,]))
+  M2[n,m,] <- M[n,m,] - rowMeans(cbind(M[n,m-1,],M[n-1,m,],M[n-1,m-1,]))
+  
+  return(M2)
+}
+```
+
+Graficaremos los campos de intensidad del viento para estudiar su comportamiento espacial y temporal.
+
+```{r}
+ws3_incrementos_espaciales = spatial_increments(ws3)
+ws1_incrementos_espaciales = spatial_increments(ws1)
+```
+
+```{r}
+dimnames(ws1_incrementos_espaciales) <- list(
+  columna = NULL,
+  fila = NULL,
+  tiempo = paste("t = ", 1:72)  # Nombres personalizados
+)
+
+ruta_analisis <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/fundamentos_y_metodologia/campos_viento_ej"
+
+if (!dir.exists(ruta_analisis)) {
+  dir.create(ruta_analisis, recursive = TRUE)
+}
+
+png(
+  filename = str_c(ruta_analisis, '/campo1km_inc_esp.png'),  # Ruta + nombre
+  width = 5000,              # Ancho en píxeles
+  height = 5000,             # Alto en píxeles
+  res = 300                  # Resolución (300 dpi para calidad)
+)
+
+levelplot(
+  ws1_incrementos_espaciales,
+  layout = c(3, 3),  # 4 filas, 3 columnas (para 12 meses)
+  col.regions = terrain.colors(100, alpha = 0.9),
+  main = "Evolución temporal del campo de incrementos espaciales del viento a 1 km en horas",
+  xlab = "Longitud",
+  ylab = "Latitud",
+  scales = list(draw = FALSE),
+  strip = strip.custom(
+    factor.levels = dimnames(ws1)[[3]]  # "T = 1", "T = 2", ...
+  ),
+  index.cond = list(order(1:9))
+)
+dev.off()
+```
+
+```{r graficar arrays3d en k tiempos}
+graf_k_time <- function(array_3d, k_values, output_dir) {
+  n <- dim(array_3d)[1]
+  m <- dim(array_3d)[2]
+  t <- dim(array_3d)[3]
+  k_mult <- t %/% k_values
+  vec_time <- seq(from=1, by=k_mult, length.out=k_values)
+  name_array <- ifelse(n*m==5670, "ws1", "ws3")
+  for (k in vec_time) {
+    array_k <- array_3d[,,k]
+    filename <- str_c(name_array, "_t", k, ".png")
+    filepath <- file.path(output_dir, filename)
+
+    png(filepath, width = 800, height = 600)
+    print(
+      levelplot(array_k,
+                col.regions = terrain.colors(100),
+                xlab = "", ylab = "", main = "")
+    )
+    dev.off()
+  }
+}
+
+# Directorio donde guardar imágenes
+ruta <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/campo_intensidad_viento"
+# Llamar a la función
+graf_k_time(ws1, 6, ruta)
+graf_k_time(ws3, 6, ruta)
+
+```
+
+
+Graficamos el campo de desviación estandar (variación) y el boxplot de las desviaciones estándar de los incrementos espaciales.
+
+```{r SD_matrix}
+sd_ws3_inc_spa <- apply(ws3_incrementos_espaciales, c(1, 2), sd)
+sd_ws1_inc_spa <- apply(ws1_incrementos_espaciales, c(1, 2), sd)
+
+# min_val <- min(sd_ws1_inc_spa, sd_ws3_inc_spa, na.rm = TRUE)
+# max_val <- max(sd_ws1_inc_spa, sd_ws3_inc_spa, na.rm = TRUE)
+# breaks <- seq(min_val, max_val, length.out = 100)
+# levelplot(sd_ws3_inc_spa, 
+#           # at=breaks, 
+#           colorkey = default_colorkey, col.regions=terrain.colors(100),xlab="",ylab="", main="")
+levelplot(sd_ws1_inc_spa, 
+          # at=breaks, 
+          colorkey = default_colorkey, col.regions=terrain.colors(100),xlab="",ylab="", main="")
+
+df <- data.frame(Desviación = as.vector(sd_ws1_inc_spa))
+ymin <- min(df$Desviación, na.rm = TRUE)
+ymax <- max(df$Desviación, na.rm = TRUE)
+ymargin <- (ymax - ymin) * 0.05  # 5% extra de margen
+
+ggplot(df, aes(x = "", y = Desviación)) +
+  stat_boxplot(geom = "errorbar", width = 0.2, color = "grey40") +
+  geom_boxplot(fill = "#69b3a2", outlier.colour = "firebrick", 
+               outlier.shape = 2, outlier.size = 3, alpha = 0.9) +
+  coord_flip() +
+  scale_y_continuous(limits = c(ymin, ymax + ymargin)) +  # Ajusta aquí
+  labs(
+    title = "",
+    y = "",
+    x = ""
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(face = "bold"),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+
+
+```
+
+### Hierarchical Clustering
+
+Realizaremos una clasifciación por método del vecino más lejano
+("complete link") sobre la matriz de distancias distribucionales de la data,
+visualizando el número de clases por método de dendogramas.
+
+Calculamos las matrices de distancias para los datos a 1km y 3km.
+
+```{r Hierarchical Clustering Complet/FPC}
+# sd3_vector <- as.vector(sd_ws3_inc_spa)
+sd1_vector <- as.vector(sd_ws1_inc_spa)
+# SD_WS3_DIST <- outer(sd3_vector, sd3_vector, FUN = function(x, y) abs(x - y))
+SD_WS1_DIST <- outer(sd1_vector, sd1_vector, FUN = function(x, y) abs(x - y))
+
+library(cluster)
+# hc3 <- agnes(SD_WS3_DIST, diss = TRUE, method = "complete")
+hc1 <- agnes(SD_WS1_DIST, diss = TRUE, method = "complete")
+# Visualizar el dendrograma
+# pltree(hc3, cex = 0.6, hang = 7, main = "Dendograma 3km")
+# pltree(hc1, cex = 0.6, hang = 7, main = "Dendograma 1km")
+
+# Extraer las alturas de las fusiones
+heights <- rev(hc1$height)  # Las alturas están en orden inverso
+
+# suponer que ya tienes:
+# sd1_vector <- as.vector(sd_ws1_inc_spa)
+# hc1 (resultado de agnes)
+hc_hclust <- as.hclust(hc1)
+
+n <- length(sd1_vector)
+max_k <- min(10, n-1)   # ajusta este valor si quieres explorar más k
+ks <- 1:max_k
+
+# calcular WSS para cada k
+wss <- sapply(ks, function(k){
+  cl <- cutree(hc_hclust, k)
+  sum(sapply(unique(cl), function(cc){
+    xi <- sd1_vector[cl == cc]
+    sum((xi - mean(xi))^2)
+  }))
+})
+
+# método "max distance to line" para detectar el codo
+line_start <- c(ks[1], wss[1])
+line_end   <- c(ks[length(ks)], wss[length(ks)])
+dist_to_line <- sapply(seq_along(ks), function(i){
+  x0 <- ks[i]; y0 <- wss[i]
+  num <- abs((line_end[2]-line_start[2])*x0 - (line_end[1]-line_start[1])*y0 +
+             line_end[1]*line_start[2] - line_end[2]*line_start[1])
+  den <- sqrt((line_end[2]-line_start[2])^2 + (line_end[1]-line_start[1])^2)
+  num/den
+})
+elbow_k <- ks[which.max(dist_to_line)]
+
+df <- data.frame(k = ks, wss = wss)
+ggplot(df, aes(k, wss)) +
+  geom_line(size = 1) +                                   # Línea más gruesa
+  geom_point(size = 2) +                                  # Puntos más grandes
+  geom_point(data = df[df$k == elbow_k, ], aes(k, wss),
+             colour = "red", size = 3) +                  # Punto del codo resaltado
+  geom_text(data = df[df$k == elbow_k, ],
+            aes(k, wss, label = paste0("k=", k)),
+            vjust = -1, size = 5) +    # Texto más grande y en negrita
+  scale_x_continuous(breaks = df$k) +                     # Mostrar todos los ticks
+  theme_bw(base_size = 14) +                              # Fuente base más grande
+  theme(
+    panel.grid.major = element_blank(),                   # Quitar grilla mayor
+    panel.grid.minor = element_blank(),                   # Quitar grilla menor
+    axis.title = element_text(size = 16, face = "bold"),   # Títulos ejes grandes y en negrita
+    axis.text = element_text(size = 14),                   # Texto ejes más grande
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5) # Título centrado y grande
+  ) +
+  labs(
+    x = "",
+    y = "",
+    title = "Suma de cuadrados inter-clusters"
+  )
+
+cluster_3 <- cutree(as.hclust(hc1), k = 4)
+levelplot(matrix(cluster_3, nrow = dim(ws1)[1], ncol = dim(ws1)[2]),
+          col.regions=terrain.colors(100),xlab="",ylab="", main="Clasificación FCP 1km k=3")
+
+
+```
+
+Identificaremos las posiciones de los representantes de cada clase de la clasificación FCP con agnes.
+
+```{r}
+# Asignar clusters (ajustando el cluster 4 a 3)
+clusters <- cutree(as.hclust(hc1), k = 4)
+clusters[clusters == 4] <- 3  # Fusionar cluster 4 con el 3
+
+# Función para encontrar el medoide usando el criterio del vecino más lejano (método completo)
+encontrar_medoide_completo <- function(cluster_k, dist_matrix) {
+  idxs <- which(clusters == cluster_k) 
+  
+  if (length(idxs) == 1) {
+    return(idxs)  
+  }
+
+  subdist <- dist_matrix[idxs, idxs]
+  
+  # Calcular la distancia máxima de cada punto a los demás (en lugar de la suma)
+  max_dists <- apply(subdist, 1, max)
+  
+  # Seleccionar el punto con la menor distancia máxima (el más "central" bajo el criterio completo)
+  idxs[which.min(max_dists)]
+}
+
+representantes <- sapply(1:3, encontrar_medoide_completo, dist_matrix = SD_WS1_DIST)
+
+indice_a_ij <- function(indice_lineal, dim_lon, dim_lat) {
+  i <- ((indice_lineal - 1) %% dim_lon) + 1
+  j <- ((indice_lineal - 1) %/% dim_lon) + 1 
+  c(i = i, j = j)
+}
+
+# Obtener posiciones matriciales de los representantes
+posiciones_representantes <- t(sapply(
+  representantes, 
+  indice_a_ij, 
+  dim_lon = dim(ws1)[1], 
+  dim_lat = dim(ws1)[2]
+))
+
+rownames(posiciones_representantes) <- paste0("Cluster_", 1:3)
+print(posiciones_representantes)
+```
+
+
+Graficamos las series centradas de los representantes de cada clase.
+
+```{r}
+# Extraer series temporales de los representantes
+series_representantes <- lapply(representantes, function(idx) {
+  ij <- indice_a_ij(idx, dim_lon = dim(ws1)[1], dim_lat = dim(ws1)[2])
+  serie <- ws1[ij["i"], ij["j"], ]
+  serie_centrada <- serie - mean(serie)  # Centrar respecto a su media
+  return(serie_centrada)
+})
+
+# Convertir a data.frame para ggplot
+df_series <- data.frame(
+  tiempo = 1:dim(ws1)[3],
+  Cluster_1 = series_representantes[[1]],
+  Cluster_2 = series_representantes[[2]],
+  Cluster_3 = series_representantes[[3]]
+)
+
+# Reestructurar para ggplot
+df_melt <- melt(df_series, id.vars = "tiempo", variable.name = "Cluster", value.name = "Anomalía")
+
+# Graficar series centradas
+ggplot(df_melt, aes(x = tiempo, y = Anomalía, color = Cluster)) +
+  geom_line(size = 1) +
+  theme_minimal() +
+  labs(title = "Series temporales centradas (medoides por cluster)",
+       x = "Tiempo", y = "Anomalía respecto a la media") +
+  theme(text = element_text(size = 12))
+```
+
+
+
+```{r, eval = FALSE}
+# install.packages("factoextra")
+library(cluster)
+library(clusterCrit) # para Calinski-Harabasz
+library(factoextra)  # opcional para visualización
+
+# Supongamos que D es tu matriz de disimilitud (objeto de clase 'dist')
+# 1. Escalamiento multidimensional clásico
+coord <- cmdscale(SD_WS1_DIST, k = 2)  # proyectar a 2 dimensiones, puedes probar con más
+
+# 2. Aplicar clustering jerárquico con agnes (enlace completo)
+hc <- agnes(SD_WS1_DIST, diss = TRUE, method = "complete")
+
+# 3. Probar diferentes cortes (por ejemplo, de 2 a 10 clusters)
+calinski_values <- c()
+
+for (k in 2:10) {
+  cluster_cut <- cutree(hc, k = k)
+  
+  # 4. Calcular índice de Calinski-Harabasz
+  ch <- intCriteria(as.matrix(coord), as.integer(cluster_cut), c("Calinski_Harabasz"))
+  calinski_values[k] <- ch$calinski_harabasz
+}
+
+# 5. Visualizar para determinar el óptimo
+plot(2:10, calinski_values[2:10], type = "b", pch = 19,
+     xlab = "Número de clusters", ylab = "Calinski-Harabasz",
+     main = "Selección del número óptimo de clusters")
+
+```
+
+### Seleccion vecindades para análisis descriptivo
+Queremos tomar 6 vecindades en total, 1 para unicamente cada cluster y 3 vecindades de transición entre clusters: mar-valle, mar-montaña (si es posible) y valle-montaña. El fin es estudiar el impacto temporal de estas vecindades y diferencias las zonas espaciales con certeza. Luego se aplicará el mismo escenario para la primera parte del esquema de downscaling, en donde si el modelo estima bien estas vecindades a 1km, podemos plantear un paso a resolución 1/3. Tomaremos la clusterización a 1km "c3.1".
+
+```{r}
+c4.1[c4.1=4] <- 3
+c3.1km.fixed <- c4.1
+# plot.c3.1
+levelplot(c3.1km.fixed, col.regions=terrain.colors(100), xlab="", ylab="", main="")
+54/3
+c3.1km.fixed[13:15, 31:33] # vecindad mar
+c3.1km.fixed[43:45, 46:48] # vecindad valle
+c3.1km.fixed[79:81, 22:24] # vecindad montaña
+# c3.1km.fixed[31:33, 51:53] # vecindad mar-valle
+# c3.1km.fixed[58:60, 19:21] # vecindad valle-montaña
+# c3.1km.fixed[35:37, 58:60] # vecindad mar-valle-montaña
+```
+
+### Análsis descriptivo vecindades
+```{r funcion de análsis descirptivo y guardado de info}
+analisis_vecindad <- function(vecindad_array, nombre_vecindad, output_dir, ylim_i = 0, ylim_f=13) {
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+
+  dims <- dim(vecindad_array)
+  n_series <- dims[1] * dims[2]
+  n_time <- dims[3]
+
+  datos <- data.frame()
+  for (i in 1:dims[1]) {
+    for (j in 1:dims[2]) {
+      serie <- vecindad_array[i, j, ]
+      temp_df <- data.frame(tiempo = 1:n_time, valor = serie, serie_id = paste0("s", i, j))
+      datos <- rbind(datos, temp_df)
+    }
+  }
+
+  stats <- describeBy(datos$valor, datos$serie_id, mat = TRUE, digits = 3)
+  write.csv(stats, file.path(output_dir, paste0(nombre_vecindad, "_estadisticas.csv")), row.names = FALSE)
+
+  # Gráfico series de tiempo
+  p_series <- ggplot(datos, aes(x = tiempo, y = valor, color = serie_id)) +
+    geom_line(size = 0.8) +
+    ylim(ylim_i, ylim_f) +
+    theme_minimal() +
+    scale_color_viridis_d(name = '') +
+    labs(title = "", y = "", x = "") +
+    theme(
+      panel.grid = element_blank(),
+      panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
+      plot.title = element_text(size = 26, face = "bold"),
+      axis.text.x = element_text(size = 20, face = "bold"),
+      axis.text.y = element_text(size = 20, face = "bold"),
+      legend.text = element_text(size = 22)
+    )
+  ggsave(file.path(output_dir, paste0(nombre_vecindad, "_series_tiempo.png")), p_series, width = 12, height = 7, dpi = 300)
+
+  # Gráfico densidades
+  p_dens <- ggplot(datos, aes(x = valor, fill = serie_id)) +
+    geom_density(alpha = 0.5) +
+    theme_minimal() +
+    scale_fill_viridis_d() +
+    labs(title = paste("Densidades de la vecindad de", nombre_vecindad), x = "Intensidad") +
+    theme(
+      panel.grid = element_blank(),
+      panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
+      plot.title = element_text(size = 20, face = "bold"),
+      axis.title.x = element_text(size = 20),
+      axis.title.y = element_text(size = 20),
+      axis.text.x = element_text(size = 18),
+      axis.text.y = element_text(size = 18)
+    )
+  ggsave(file.path(output_dir, paste0(nombre_vecindad, "_densidades.png")), p_dens, width = 12, height = 7, dpi = 300)
+
+  # Matriz de dispersión
+  df_wide <- reshape2::dcast(datos, tiempo ~ serie_id, value.var = "valor")
+  p_scatter <- ggpairs(df_wide[,-1],
+                       title = "",
+                       lower = list(continuous = wrap("smooth", colour = "red", alpha = 0.6)),
+                       upper = list(continuous = wrap("points", alpha = 0.5, size = 1.2)),
+                       diag = list(continuous = "barDiag")) +
+    theme_minimal() +
+    theme(
+      panel.grid = element_blank(),
+      panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
+      plot.title = element_text(size = 26, face = "bold"),
+      axis.text.x = element_text(size = 20),
+      axis.text.y = element_text(size = 20)
+    )
+  ggsave(file.path(output_dir, paste0(nombre_vecindad, "_scatter_matrix.png")), p_scatter, width = 18, height = 16, dpi = 300)
+
+  # Boxplot
+  p_box <- ggplot(datos, aes(x = serie_id, y = valor, fill = serie_id)) +
+    geom_boxplot(outlier.colour = "red", outlier.shape = 16, outlier.size = 2,
+                 notch = TRUE, notchwidth = 0.5, alpha = 0.7) +
+    ylim(0, 13) +
+    scale_fill_viridis_d() +
+    theme_minimal(base_size = 12) +
+    theme(
+      panel.grid = element_blank(),
+      panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 20, face = "bold"),
+      axis.text.y = element_text(size = 20, face = "bold"),
+      plot.title = element_text(size = 24, face = "bold"),
+      legend.position = "none"
+    ) +
+    labs(title = "", x = "", y = "")
+  ggsave(file.path(output_dir, paste0(nombre_vecindad, "_boxplots.png")), p_box, width = 12, height = 7, dpi = 300)
+
+  message(paste("Análisis de la vecindad", nombre_vecindad, "completado y guardado en:", output_dir))
+}
+
+```
+
+```{r definimos las vecindades en arrays3d}
+v_mar <- ws1[13:15, 31:33,] # vecindad mar
+v_valle <- ws1[43:45, 46:48,] # vecindad valle
+v_mont <- ws1[79:81, 22:24,] # vecindad montaña
+
+# c3.1[13:15, 31:33]
+# c3.1[43:45, 46:48]
+# c3.1[79:81, 22:24]
+
+ruta_analisis <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/analisis_descriptivo"
+
+analisis_vecindad(v_mar, "mar", str_c(ruta_analisis, "/mar"))
+analisis_vecindad(v_valle, "valle", str_c(ruta_analisis, "/valle"))
+analisis_vecindad(v_mont, "mont", str_c(ruta_analisis, "/mont"))
+
+```
+
+
+
+## Implementación de modelo de regresión ponderada
+
+Los siguientes chuncks son funciones de utilidad para poder ejecutar el simulador, GTWRbase y GTWRpredictor.
+
+```{r interpolación vecino más cercano}
+#' Interpolación espacial de un array 3D usando vecino más cercano
+#'
+#' @param Xb Array de dimensiones (30, 21, T), representando una malla gruesa.
+#'
+#' @return Un array (90, 63, T) interpolado espacialmente a resolución fina (1km),
+#'         utilizando vecino más cercano y un pequeño ajuste espacial.
+#'
+#' @details
+#' - Se genera una malla fina (3x resolución de entrada).
+#' - Se aplica interpolación de vecino más cercano.
+#' - Se realiza un desplazamiento de una fila/columna para suavizar bordes.
+#'
+#' @examples
+#' # Suponiendo Xb es un array (30, 21, T)
+#' Xvb <- get.xvb(Xb)
+
+get.xvb <- function(Xb){
+  n = dim(Xb)[1]*3
+  m = dim(Xb)[2]*3
+  t = dim(Xb)[3]
+  
+  # Coordenadas espaciales
+  x_fino <- seq(1,n, by = 1)
+  y_fino <- seq(1,m, by = 1)
+  x_grueso <- seq(1,n, by = 3)
+  y_grueso <- seq(1,m, by = 3)
+  
+  grid_fino <- expand.grid(x_fino, y_fino)
+  grid_grueso <- expand.grid(x_grueso, y_grueso)
+
+  Xvb <- array(NA, dim = c(n, m, t))
+  
+  for (k in 1:t) {
+    z_grueso <- as.vector(Xb[,,k])
+    dist_matrix <- rdist(grid_fino, grid_grueso)
+    nearest_indices <- apply(dist_matrix, 1, which.min)
+    Xvb[,,k] <- matrix(z_grueso[nearest_indices], nrow = n, ncol = m)
+  }
+  
+  # Ajuste espacial para evitar borde vacío
+  mat_shifted <- Xvb
+  mat_shifted[2:dim(Xvb)[1], 2:dim(Xvb)[2], ] <- Xvb[1:(dim(Xvb)[1]-1), 1:(dim(Xvb)[2]-1), ]
+  mat_shifted[1, ,] <- mat_shifted[2, ,]
+  mat_shifted[, 1,] <- mat_shifted[, 2,]
+  mat_shifted[1, 1,] <- mat_shifted[2,2,]
+  
+  Xvb <- mat_shifted
+  return(Xvb)
+}
+
+```
+
+Este método de validación cruzada temporal es tentativo. Es ideal emplear un método espacial para el problemas.
+
+```{r método TLOO de validación cruzada, eval = FALSE}
+#TEMPORAL LEAVE-ONE-OUT CROSS-VALIDATION METHOD
+cv.tloo <- function(h, Xlb, Xvb, D, b_time = 6){
+  #crear bloques de tiempo de ancho b horas
+  t <- dim(Xvb)[3]
+  blocks <- split(1:t, ceiling(seq_along(1:t) / b_time))
+  W <- exp(-(D/h))
+  
+  results <- c()
+  for (i in seq_along(blocks)) {
+    block_i <-  blocks[[i]]
+    Xlb_filt <- Xlb[,, -block_i]
+    Xvb_filt <- Xvb[,, -block_i]
+
+    B <- betas_i(Xlb_filt, Xvb_filt, W)
+
+    X1.pred <- gtwr.alonso(Xvb_filt, B)
+    residuals <- Xlb_filt - X1.pred
+    rmse <- sqrt(mean(residuals^2))
+    results[i] <- rmse
+  }
+  return(mean(results))
+}
+
+#probar aplicar una CV por cluster distribucional
+cv.tloo_clust <- function(h, Xlb, Xvb, D, Clust, clust_num, b_time = 6){
+  T <- dim(Xvb)[3]
+  blocks <- split(1:T, ceiling(seq_along(1:T) / b_time))
+  W <- exp(-(D/h))
+  Clust_mask <- ifelse(Clust == clust_num, TRUE, FALSE)
+  Xlb_mask <- sweep(Xlb, c(1, 2), Clust_mask*1, "*")
+  Xlb_mask[Xlb_mask == 0] <- NA
+  Xvb_mask <- sweep(Xvb, c(1, 2), Clust_mask*1, "*")
+  Xvb_mask[Xvb_mask == 0] <- NA 
+  
+  results <- c()
+  for (i in seq_along(blocks)) {
+    block_i <-  blocks[[i]]
+    Xlb_filt_mask <- Xlb_mask[,, -block_i]
+    Xvb_filt_mask <- Xvb_mask[,, -block_i]
+    
+    B <- betas_i(Xlb_filt_mask, Xvb_filt_mask, W)
+    
+    X1.pred <- gtwr.alonso(Xvb_filt_mask, B)
+    residuals <- Xlb_filt_mask - X1.pred
+    rmse <- sqrt(mean(residuals^2, na.rm = TRUE))
+    results[i] <- rmse
+  }
+  return(mean(results, na.rm = TRUE))
+}
+```
+
+```{r Xv3 vecinos ponderados, eval = FALSE}
+library(geosphere)
+Xvb.new <- function(Xb, lat1, long1, lat3, long3, M = 1, C = 500){
+  n = dim(Xb)[1]
+  m = dim(Xb)[2]
+  t = dim(Xb)[3]
+  Xvb <- array(0, dim = c(n*3, m*3, t))
+  
+  # interior de la grilla
+  for (i in 2:(n-1)) for (j in 2:(m-1)){
+      V3_long <- c(t(long3[(i-M):(i+M), (j-M):(j+M)]))
+      V3_lat <- c(t(lat3[(i-M):(i+M), (j-M):(j+M)]))
+      V3 <- Xb[(i-M):(i+M), (j-M):(j+M), ]
+
+      V1_long <- c(t(long1[(i*3-2):(i*3), (j*3-2):(j*3)]))
+      V1_lat <- c(t(lat1[(i*3-2):(i*3), (j*3-2):(j*3)]))
+      
+      V3_mat <- matrix(aperm(V3, c(2,1,3)), nrow = length(V3_long), ncol = t)
+      V1 <- matrix(NA, length(V1_long), t)
+      
+      for (k in seq_along(V1_long)) {
+        p1 <- c(V1_long[k], V1_lat[k])
+        dist_vec <- c()
+        for (l in seq_along(V3_long)){
+          p2 <- c(V3_long[l], V3_lat[l])
+          dist_vec[l] <- distGeo(p1, p2)
+        }
+        dist_vec_til_inv <- 1 / (dist_vec + C)
+        V1[k, ] <- (1/sum(dist_vec_til_inv)) * colSums(V3_mat * dist_vec_til_inv)  
+        }
+      V1 <- aperm(array(t(V1), dim = c(t, 3, 3)), c(2, 3, 1))
+      Xvb[(i*3-2):(i*3), (j*3-2):(j*3), ] <- V1
+  }
+  
+  for (i in 2:(n-1)){
+      V3_long <- c(t(long3[(i-M):(i+M), 1:2]))
+      V3_lat <- c(t(lat3[(i-M):(i+M), 1:2]))
+      V3 <- Xb[(i-M):(i+M), 1:2, ]
+
+      V1_long <- c(t(long1[(i*3-2):(i*3), 1:3]))
+      V1_lat <- c(t(lat1[(i*3-2):(i*3), 1:3]))
+      
+      V3_mat <- matrix(aperm(V3, c(2,1,3)), nrow = length(V3_long), ncol = t)
+      V1 <- matrix(NA, length(V1_long), t)
+      
+      for (k in seq_along(V1_long)) {
+        p1 <- c(V1_long[k], V1_lat[k])
+        dist_vec <- c()
+        for (l in seq_along(V3_long)){
+          p2 <- c(V3_long[l], V3_lat[l])
+          dist_vec[l] <- distGeo(p1, p2)
+        }
+        dist_vec_til_inv <- 1 / (dist_vec + C)
+        V1[k, ] <- (1/sum(dist_vec_til_inv)) * colSums(V3_mat * dist_vec_til_inv)  
+        }
+      V1 <- aperm(array(t(V1), dim = c(t, 3, 3)), c(2, 3, 1))
+      Xvb[(i*3-2):(i*3), 1:3, ] <- V1
+    }
+
+  for (i in 2:(n-1)) { # borde superior
+      V3_long <- c(t(long3[(i-M):(i+M), (m-1):m]))
+      V3_lat <- c(t(lat3[(i-M):(i+M), (m-1):m]))
+      V3 <- Xb[(i-M):(i+M), (m-1):m, ]
+
+      V1_long <- c(t(long1[(i*3-2):(i*3), (m*3-2):(m*3)]))
+      V1_lat <- c(t(lat1[(i*3-2):(i*3), (m*3-2):(m*3)]))
+      
+      V3_mat <- matrix(aperm(V3, c(2,1,3)), nrow = length(V3_long), ncol = t)
+      V1 <- matrix(NA, length(V1_long), t)
+      
+      for (k in seq_along(V1_long)) {
+        p1 <- c(V1_long[k], V1_lat[k])
+        dist_vec <- c()
+        for (l in seq_along(V3_long)){
+          p2 <- c(V3_long[l], V3_lat[l])
+          dist_vec[l] <- distGeo(p1, p2)
+        }
+        dist_vec_til_inv <- 1 / (dist_vec + C)
+        V1[k, ] <- (1/sum(dist_vec_til_inv)) * colSums(V3_mat * dist_vec_til_inv)  
+        }
+      V1 <- aperm(array(t(V1), dim = c(t, 3, 3)), c(2, 3, 1))
+      Xvb[(i*3-2):(i*3), (m*3-2):(m*3), ] <- V1
+  }
+
+  for (j in 2:(m-1)) { # borde izquierdo
+      V3_long <- c(t(long3[1:2, (j-M):(j+M)]))
+      V3_lat <- c(t(lat3[1:2, (j-M):(j+M)]))
+      V3 <- Xb[1:2, (j-M):(j+M), ]
+
+      V1_long <- c(t(long1[1:3, (j*3-2):(j*3)]))
+      V1_lat <- c(t(lat1[1:3, (j*3-2):(j*3)]))
+      
+      V3_mat <- matrix(aperm(V3, c(2,1,3)), nrow = length(V3_long), ncol = t)
+      V1 <- matrix(NA, length(V1_long), t)
+      
+      for (k in seq_along(V1_long)) {
+        p1 <- c(V1_long[k], V1_lat[k])
+        dist_vec <- c()
+        for (l in seq_along(V3_long)){
+          p2 <- c(V3_long[l], V3_lat[l])
+          dist_vec[l] <- distGeo(p1, p2)
+        }
+        dist_vec_til_inv <- 1 / (dist_vec + C)
+        V1[k, ] <- (1/sum(dist_vec_til_inv)) * colSums(V3_mat * dist_vec_til_inv)  
+        }
+      V1 <- aperm(array(t(V1), dim = c(t, 3, 3)), c(2, 3, 1))
+      Xvb[1:3, (j*3-2):(j*3), ] <- V1
+  }
+
+  for (j in 2:(m-1)) { # borde derecho
+      V3_long <- c(t(long3[(n-1):n, (j-M):(j+M)]))
+      V3_lat <- c(t(lat3[(n-1):n, (j-M):(j+M)]))
+      V3 <- Xb[(n-1):n, (j-M):(j+M), ]
+
+      V1_long <- c(t(long1[(n*3-2):(n*3), (j*3-2):(j*3)]))
+      V1_lat <- c(t(lat1[(n*3-2):(n*3), (j*3-2):(j*3)]))
+      
+      V3_mat <- matrix(aperm(V3, c(2,1,3)), nrow = length(V3_long), ncol = t)
+      V1 <- matrix(NA, length(V1_long), t)
+      
+      for (k in seq_along(V1_long)) {
+        p1 <- c(V1_long[k], V1_lat[k])
+        dist_vec <- c()
+        for (l in seq_along(V3_long)){
+          p2 <- c(V3_long[l], V3_lat[l])
+          dist_vec[l] <- distGeo(p1, p2)
+        }
+        dist_vec_til_inv <- 1 / (dist_vec + C)
+        V1[k, ] <- (1/sum(dist_vec_til_inv)) * colSums(V3_mat * dist_vec_til_inv)  
+        }
+      V1 <- aperm(array(t(V1), dim = c(t, 3, 3)), c(2, 3, 1))
+      Xvb[(n*3-2):(n*3), (j*3-2):(j*3), ] <- V1
+  }
+  
+  #pixel 1,1 ===============================
+  V3_long <- c(t(long3[1:2, 1:2]))
+  V3_lat <- c(t(lat3[1:2, 1:2]))
+  V3 <- Xb[1:2, 1:2, ]
+
+  V1_long <- c(t(long1[1:3, 1:3]))
+  V1_lat <- c(t(lat1[1:3, 1:3]))
+  
+  V3_mat <- matrix(aperm(V3, c(2,1,3)), nrow = length(V3_long), ncol = t)
+  V1 <- matrix(NA, length(V1_long), t)
+  
+  for (k in seq_along(V1_long)) {
+    p1 <- c(V1_long[k], V1_lat[k])
+    dist_vec <- c()
+    for (l in seq_along(V3_long)){
+      p2 <- c(V3_long[l], V3_lat[l])
+      dist_vec[l] <- distGeo(p1, p2)
+    }
+    dist_vec_til_inv <- 1 / (dist_vec + C)
+    V1[k, ] <- (1/sum(dist_vec_til_inv)) * colSums(V3_mat * dist_vec_til_inv)  
+    }
+  V1 <- aperm(array(t(V1), dim = c(t, 3, 3)), c(2, 3, 1))
+  Xvb[1:3, 1:3, ] <- V1
+  
+  #pixel 1,m ===============================
+  V3_long <- c(t(long3[1:2, (m-1):m]))
+  V3_lat <- c(t(lat3[1:2, (m-1):m]))
+  V3 <- Xb[1:2, (m-1):m, ]
+
+  V1_long <- c(t(long1[1:3, (m*3-2):(m*3)]))
+  V1_lat <- c(t(lat1[1:3, (m*3-2):(m*3)]))
+  
+  V3_mat <- matrix(aperm(V3, c(2,1,3)), nrow = length(V3_long), ncol = t)
+  V1 <- matrix(NA, length(V1_long), t)
+  
+  for (k in seq_along(V1_long)) {
+    p1 <- c(V1_long[k], V1_lat[k])
+    dist_vec <- c()
+    for (l in seq_along(V3_long)){
+      p2 <- c(V3_long[l], V3_lat[l])
+      dist_vec[l] <- distGeo(p1, p2)
+    }
+    dist_vec_til_inv <- 1 / (dist_vec + C)
+    V1[k, ] <- (1/sum(dist_vec_til_inv)) * colSums(V3_mat * dist_vec_til_inv)  
+    }
+  V1 <- aperm(array(t(V1), dim = c(t, 3, 3)), c(2, 3, 1))
+  Xvb[1:3, (m*3-2):(m*3), ] <- V1
+  
+  #pixel n,1 ===============================
+  V3_long <- c(t(long3[(n-1):n, 1:2]))
+  V3_lat <- c(t(lat3[(n-1):n, 1:2]))
+  V3 <- Xb[(n-1):n, 1:2, ]
+
+  V1_long <- c(t(long1[(n*3-2):(n*3), 1:3]))
+  V1_lat <- c(t(lat1[(n*3-2):(n*3), 1:3]))
+  
+  V3_mat <- matrix(aperm(V3, c(2,1,3)), nrow = length(V3_long), ncol = t)
+  V1 <- matrix(NA, length(V1_long), t)
+  
+  for (k in seq_along(V1_long)) {
+    p1 <- c(V1_long[k], V1_lat[k])
+    dist_vec <- c()
+    for (l in seq_along(V3_long)){
+      p2 <- c(V3_long[l], V3_lat[l])
+      dist_vec[l] <- distGeo(p1, p2)
+    }
+    dist_vec_til_inv <- 1 / (dist_vec + C)
+    V1[k, ] <- (1/sum(dist_vec_til_inv)) * colSums(V3_mat * dist_vec_til_inv)  
+    }
+  V1 <- aperm(array(t(V1), dim = c(t, 3, 3)), c(2, 3, 1))
+  Xvb[(n*3-2):(n*3), 1:3, ] <- V1
+  
+  #pixel n,m ===============================
+  V3_long <- c(t(long3[(n-1):n, (m-1):m]))
+  V3_lat <- c(t(lat3[(n-1):n, (m-1):m]))
+  V3 <- Xb[(n-1):n, (m-1):m, ]
+
+  V1_long <- c(t(long1[(n*3-2):(n*3), (m*3-2):(m*3)]))
+  V1_lat <- c(t(lat1[(n*3-2):(n*3), (m*3-2):(m*3)]))
+  
+  V3_mat <- matrix(aperm(V3, c(2,1,3)), nrow = length(V3_long), ncol = t)
+  V1 <- matrix(NA, length(V1_long), t)
+  
+  for (k in seq_along(V1_long)) {
+    p1 <- c(V1_long[k], V1_lat[k])
+    dist_vec <- c()
+    for (l in seq_along(V3_long)){
+      p2 <- c(V3_long[l], V3_lat[l])
+      dist_vec[l] <- distGeo(p1, p2)
+    }
+    dist_vec_til_inv <- 1 / (dist_vec + C)
+    V1[k, ] <- (1/sum(dist_vec_til_inv)) * colSums(V3_mat * dist_vec_til_inv)  
+    }
+  V1 <- aperm(array(t(V1), dim = c(t, 3, 3)), c(2, 3, 1))
+  Xvb[(n*3-2):(n*3), (m*3-2):(m*3), ] <- V1
+  
+  return(Xvb)
+}
+
+```
+
+```{r Xv3 interpolador bi-cúbico, eval = FALSE}
+x3 <- 1:30
+y3 <- 1:21
+x1 <- seq(min(x3), max(x3), length.out = 90)
+y1 <- seq(min(y3), max(y3), length.out = 63)
+grid1 <- list(x = x1, y = y1)
+Xb_vb_bicub<- array(NA, dim = c(90, 63, 72))
+for (t in 1:72) {
+  z <- ws3[,,t]
+  interp_obj <- list(x = x3, y = y3, z = z)
+  interp_result <- interp.surface.grid(interp_obj, grid1)
+  Xb_vb_bicub[,,t] <- interp_result$z
+}
+
+# t=50
+# image.plot(Xvb[,,t], main="Vecino más cercano")
+# image.plot(Xvb_pond[,,t], main="Ponderación vecinos más cercanos")
+# image.plot(Xvb_inter[,,t], main="Interpolador bicúbico")
+# image.plot(ws1[,,t])
+```
+
+### Simulación: construcción de campos con ruidos fraccionario simple
+
+```{r OOP Simulador de Campo y resultados}
+#' Clase GTWRSimulador
+#'
+#' Simula, ajusta y evalúa un modelo de regresión espacial tipo GTWR (Geographically and Temporally Weighted Regression)
+#' sobre datos interpolados espacio-temporalmente.
+#'
+#' @field Xvb Array 3D de dimensiones (n, m, t) con datos explicativos interpolados (malla fina).
+#' @field Beta_real Matriz (n x m) de coeficientes reales utilizados en la simulación.
+#' @field W_peso Matriz de pesos espaciales.
+#' @field noise_var Varianza del ruido aditivo en la variable dependiente.
+#' @field noise_beta Varianza del ruido agregado a los betas reales.
+#' @field X1_sim Array 3D con los valores simulados de la variable dependiente.
+#' @field B Vector de coeficientes estimados (en forma lineal).
+#' @field B_mtx Matriz (n x m) con los betas estimados.
+#' @field prediccion Array 3D con las predicciones del modelo.
+#' @field residuos Array 3D con los errores de predicción.
+#' @field Beta_sim Matriz (n x m) de betas reales perturbados con ruido.
+#'
+#' @section Métodos:
+#' - \code{inicializar_simulacion()}: Genera los valores simulados `X1_sim` aplicando betas con ruido.
+#' - \code{estimar_beta()}: Estima los betas a partir de los pesos espaciales y las simulaciones.
+#' - \code{predecir()}: Aplica el modelo GTWR para predecir y calcular residuos.
+#' - \code{metricas()}: Devuelve MSE, RMSE y R² entre `X1_sim` y las predicciones.
+#' - \code{graficar_resultados(k, output_dir)}: Genera y guarda visualizaciones en tiempo.
+
+GTWRSimulador <- setRefClass(
+  "GTWRSimulador",
+  fields = list(
+    Xvb = "array",
+    Beta_real = "matrix",
+    W_peso = "matrix",
+    noise_var = "numeric",
+    noise_beta = "numeric",
+    X1_sim = "array",
+    B = "vector",
+    B_mtx = "matrix",
+    prediccion = "array",
+    residuos = "array",
+    Beta_sim = "matrix"
+  ),
+
+  methods = list(
+    #' Inicializa la simulación
+    #' 
+    #' Genera `X1_sim` aplicando los coeficientes `Beta_sim` perturbados por ruido, 
+    #' junto a un ruido aditivo (`epsilons`).
+    inicializar_simulacion = function() {
+      "Inicializa la simulación generando ruido y la variable simulada X1"
+      n <- dim(Xvb)[1]
+      m <- dim(Xvb)[2]
+      t <- dim(Xvb)[3]
+      ruido_beta <- matrix(rnorm(n*m, 0, noise_beta), n, m)
+      Beta_sim <<- Beta_real + ruido_beta
+      epsilons <- matrix(rnorm(n*m, 0, noise_var), n, m)
+
+      X1_sim <<- Xvb
+      for (k in 1:t) {
+        X1_sim[,,k] <<- Beta_sim * Xvb[,,k] + epsilons
+      }
+    },
+    
+    #' Estima los coeficientes beta (regresión ponderada)
+    #' 
+    #' Calcula los coeficientes B ponderando localmente por los pesos espaciales definidos en `W`.
+    estimar_beta = function() {
+      n <- dim(Xvb)[1]
+      m <- dim(Xvb)[2]
+      B <<- numeric(n * m)
+    
+      for (i in 1:(n * m)) {
+        Wi <- matrix(W[i, ], n, m, byrow = TRUE)
+        N1 <- sum(Wi * rowSums(X1_sim * Xvb, dims = 2, na.rm = TRUE), na.rm = TRUE)
+        D1 <- sum(Wi * rowSums(Xvb * Xvb, dims = 2, na.rm = TRUE), na.rm = TRUE)
+        B[i] <<- ifelse(D1 != 0, (N1 / D1), 0)
+      }
+      B_mtx <<- matrix(B, n, m, byrow = TRUE) 
+    },
+
+    #' Realiza la predicción del modelo GTWR
+    #' 
+    #' Multiplica cada capa de `Xvb` por los betas estimados `B_mtx` y calcula los residuos.
+    predecir = function() {
+      "Aplica el modelo de predicción GTWR"
+      n <- dim(Xvb)[1]
+      m <- dim(Xvb)[2]
+      t <- dim(Xvb)[3]
+      prediccion <<- Xvb
+      for (k in 1:t) {
+        prediccion[,,k] <<- B_mtx * Xvb[,,k]
+      }
+      residuos <<- X1_sim - prediccion
+    },
+    
+    #' Calcula métricas de evaluación
+    #'
+    #' @return Vector con MSE, RMSE y R² entre `X1_sim` y `prediccion`.
+    metricas = function() {
+      mse <- mean(residuos^2)
+      rmse <- sqrt(mse)
+      
+      # Varianza total de la simulación como denominador para R^2
+      var_total <- var(as.vector(X1_sim), na.rm = TRUE)
+      r2 <- 1 - (mse / var_total)
+      
+      return(c(MSE = mse, RMSE = rmse, R2 = r2))
+    },
+
+    #' Genera y guarda gráficos para tiempo k
+    #'
+    #' @param k Índice temporal a graficar.
+    #' @param output_dir Carpeta donde se guardarán los gráficos.
+    #' 
+    #' Genera mapas de:
+    #' - Beta estimado
+    #' - Beta simulado
+    #' - Simulación real
+    #' - Predicción
+    #' - Residuos
+    #' 
+    #' Además de histogramas y boxplot de residuos.
+    graficar_resultados = function(k, output_dir = ".") {
+      "Grafica y guarda resultados para el tiempo k"
+      library(lattice)
+
+      trellis.par.set(list(
+        axis.text = list(cex = 1.5),
+        par.main.text = list(cex = 1.5),
+        par.xlab.text = list(cex = 1.5),
+        par.ylab.text = list(cex = 1.5)
+      ))
+
+      default_colorkey <- list(
+                            width = 1.5,
+                            labels = list(cex = 1.5)
+                            )
+      
+      min_val <- min(Xvb, X1_sim, prediccion, na.rm = TRUE)
+      max_val <- max(Xvb, X1_sim, prediccion, na.rm = TRUE)
+      breaks <- seq(min_val, max_val, length.out = 100)
+      
+      # Asegurar que el directorio de salida exista
+      if (!dir.exists(output_dir)) {
+        dir.create(output_dir, recursive = TRUE)
+      }
+    
+      # Helper para construir rutas
+      ruta <- function(nombre_archivo) file.path(output_dir, nombre_archivo)
+    
+      # Gráfico 1: Betas estimados
+      png(filename = ruta("beta_estimado.png"), width = 800, height = 600)
+      print(levelplot(B_mtx,col.regions = terrain.colors(100),
+          main = "",xlab = "", ylab = "",colorkey = default_colorkey))
+      dev.off()
+      
+      # Gráfico 1: Betas simulados
+      png(filename = ruta("beta_sim.png"), width = 800, height = 600)
+      print(levelplot(Beta_sim,col.regions = terrain.colors(100),
+          main = "",xlab = "", ylab = "",colorkey = default_colorkey))
+      dev.off()
+    
+      # Gráfico 2: Intensidad viento 1km en t=k
+      png(filename = ruta("X1_sim.png"), width = 800, height = 600)
+      print(levelplot(X1_sim[,,k], col.regions = terrain.colors(100),
+                      main = "",xlab = "", ylab = "",
+                      at=breaks,colorkey = default_colorkey))
+      dev.off()
+    
+      # Gráfico 3: Xvb en t=k
+      png(filename = ruta("Xvb.png"), width = 800, height = 600)
+      print(levelplot(Xvb[,,k], col.regions = terrain.colors(100),
+                      main = "",xlab = "", ylab = "",
+                      at=breaks,colorkey = default_colorkey))
+      dev.off()
+    
+      # Gráfico 4: Predicción en t=k
+      png(filename = ruta("X1_pred_sim.png"), width = 800, height = 600)
+      print(levelplot(prediccion[,,k], col.regions = terrain.colors(100),
+                      main = "",xlab = "", ylab = "",
+                      at=breaks,colorkey = default_colorkey))
+      dev.off()
+    
+      # Gráfico 5: Residuos en t=k
+      png(filename = ruta("residuos_sim.png"), width = 800, height = 600)
+      print(levelplot(residuos[,,k], col.regions = terrain.colors(100),
+                      main = "",xlab = "", ylab = "",colorkey = default_colorkey))
+      dev.off()
+    
+      # Histograma 1: Betas reales
+      png(filename = ruta("hist_beta_sim.png"), width = 800, height = 600)
+      hist(as.vector(Beta_sim), breaks = 100, col = "#69b3a2", border = "white",
+           main = "", xlab = "", xlim=c(min(Beta_sim),max(Beta_sim)))
+      dev.off()
+    
+      # Histograma 2: Betas estimados
+      png(filename = ruta("hist_beta_est.png"), width = 800, height = 600)
+      hist(B, breaks = 100, col = "#69b3a2", border = "white",
+           main = "", xlab = "", xlim=c(min(B),max(B)))
+      dev.off()
+    
+      # Boxplots: residuos
+      df <- data.frame(residuos = as.vector(residuos[,,k]))
+      ymin <- min(df$residuos, na.rm = TRUE)
+      ymax <- max(df$residuos, na.rm = TRUE)
+      ymargin <- (ymax - ymin) * 0.05  # 5% extra de margen
+      p <- ggplot(df, aes(x = "", y = residuos)) +
+        stat_boxplot(geom = "errorbar", width = 0.2, color = "grey40") +
+        geom_boxplot(fill = "#69b3a2", outlier.colour = "firebrick", 
+                     outlier.shape = 2, outlier.size = 3, alpha = 0.9) +
+        coord_flip() +
+        scale_y_continuous(limits = c(ymin - ymargin, ymax + ymargin)) +  # Ajusta aquí
+        labs(
+          title = "",
+          y = "",
+          x = ""
+        ) +
+        theme_minimal(base_size = 12) +
+        theme(
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank()
+        )
+      ggsave(ruta("sim_boxplot_res.png"), p, width = 8, height = 6, dpi = 300)
+    }
+
+  )
+)
+
+```
+
+```{r estudio de simulación}
+# Definimos pesos
+sd_ws3 <- apply(Xvb, c(2, 1), sd)
+sd_vector <- as.vector(sd_ws3)
+SD_dist_mtx <- outer(sd_vector, sd_vector, FUN = function(x, y) abs(x - y))
+D <- Eucl_dist_mtx/10000 + SD_dist_mtx/0.01
+h <- 0.02 # ancho de banda arbitrario a los datos
+W <- exp(-(D/h))
+
+lu_index1km <- ncvar_get(wrf1km, "LU_INDEX")
+lu_index1km_mean <- apply(lu_index1km, c(1, 2), mean)
+Beta_mtx_lu <- matrix(sapply(lu_index1km_mean, FUN = function(x){1 + (18-x)/18}), 90, 63)
+# levelplot(Beta_mtx_lu,col.regions=terrain.colors(200),xlab="",ylab="",main="Land-use index ireg 1km",margin=FALSE)
+
+# Simulación ejemplo
+ruta_sim <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/simulaciones"
+
+#variación de beta fija
+noise_var_vec <- c(0.005, 0.01, 0.03, 0.05, 0.1)
+noise_beta <- 0.05 #fijo para el estudio
+
+# Crear data.frame vacío para almacenar resultados
+resultados_metricas <- data.frame(
+  sigma_res = noise_var_vec,
+  MSE = NA,
+  RMSE = NA,
+  R2 = NA
+)
+
+i <- 0
+for (noise_var in noise_var_vec) {
+  i <- i + 1
+  ruta_sim_var <- str_c(ruta_sim, paste("/sim_var_err_", noise_var, sep=""))
+  
+  sim <- GTWRSimulador$new(
+    Xvb = Xvb,
+    Beta_real = Beta_mtx_lu,
+    W_peso = W,
+    noise_var = noise_var,
+    noise_beta = noise_beta
+  )
+  
+  sim$inicializar_simulacion()
+  sim$estimar_beta()
+  sim$predecir()
+  
+  # Guardar métricas en la fila correspondiente
+  resultados_metricas[i, 2:4] <- sim$metricas()
+  
+  for (k in seq(from = 2, by = dim(Xvb)[3] %/% 4, length.out = 4)) {
+    ruta_sim_var_k <- str_c(ruta_sim_var, paste("/t_", k, sep = ""))
+    sim$graficar_resultados(k = k, output_dir = ruta_sim_var_k)
+  }
+}
+
+# Mostrar la tabla final
+print(resultados_metricas)
+tabla_latex <- xtable(resultados_metricas, digits = c(2, 3, 5, 5, 4))  # ajusta decimales
+# print(tabla_latex, include.rownames = FALSE)
+
+```
+
+
+### Estimación del campo X1
+
+```{r Clases OOP para modelo GTWR }
+# Clase GTWRbase
+#' @title GTWRbase: Modelo de Regresión Ponderada Espacio-Temporal Generalizada
+#' @description Esta clase implementa una versión simplificada de un modelo GTWR (Geographically and Temporally Weighted Regression), el cual estima un parámetro β espacial y temporalmente variable. 
+#' Es utilizado para realizar downscaling espacial de una variable (por ejemplo, viento), permitiendo predecir valores a una resolución más fina a partir de campos a menor resolución, considerando pesos espaciales.
+#'
+#' Campos principales:
+#' - Xb_vb: array 3D [n x m x t] de la variable predictora de baja resolución en una vecindad.
+#' - Xlb: array 3D [n x m x t] de la variable de alta resolución (real).
+#' - W: matriz de pesos espaciales [n*m x n*m], que pondera la influencia espacial.
+#' - B: vector con los valores estimados de β.
+#' - B_mtx: matriz [n x m] con β estimado en cada celda espacial.
+#' - prediccion: array 3D con los valores predichos.
+#' - residuos: diferencia entre predicción y valor real.
+#' - metricas: lista con RMSE, MSE y R².
+
+GTWRbase <- setRefClass(
+  "GTWRbase",
+  fields = list(
+    Xb_vb = "array",     # Variable predictora de baja resolución (en vecindad)
+    Xlb = "array",       # Observaciones reales de alta resolución
+    W = "matrix",        # Matriz de pesos espaciales
+    B = "vector",        # Coeficientes beta estimados
+    B_mtx = "matrix",    # Coeficientes beta en formato espacial
+    prediccion = "array",# Array con predicciones generadas
+    residuos = "array",  # Diferencia entre predicción y realidad
+    metricas = "list"    # Métricas de evaluación (RMSE, MSE, R²)
+  ),
+
+  methods = list(
+    
+    #' @description Estima los coeficientes beta utilizando regresión ponderada por mínimos cuadrados (WLS).
+    #' @return Matriz \code{B_mtx} con coeficientes estimados (n x m)
+    estimar_beta = function() {
+      "Calcula el beta estimado usando WLS"
+      n <- dim(Xb_vb)[1]
+      m <- dim(Xb_vb)[2]
+      B <<- numeric(n * m)
+      for (i in 1:(n * m)) {
+        Wi <- matrix(W[i, ], n, m, byrow = TRUE)
+        N1 <- sum(Wi * rowSums(Xlb * Xb_vb, dims = 2, na.rm = TRUE), na.rm = TRUE)
+        D1 <- sum(Wi * rowSums(Xb_vb * Xb_vb, dims = 2, na.rm = TRUE), na.rm = TRUE)
+        B[i] <<- ifelse(D1 != 0, (N1 / D1), 0)
+      }
+      B_mtx <<- matrix(B, n, m, byrow = TRUE) 
+      return(B_mtx)
+    },
+    
+    #' @description Predice la variable dependiente en resolución fina usando los coeficientes beta estimados.
+    #' @return Array \code{prediccion} de dimensiones (n, m, t)
+    gtwr_model = function() {
+      "Estimación del campo a lambda b km"
+      n <- dim(Xb_vb)[1]
+      m <- dim(Xb_vb)[2]
+      t <- dim(Xb_vb)[3]
+      prediccion <<- Xb_vb
+      for (k in 1:t) {
+          prediccion[,,k] <<- B_mtx * Xb_vb[,,k]
+      }
+      return(prediccion)
+    },
+    
+    #' @description Calcula métricas de evaluación del modelo: RMSE, MSE y R².
+    #' @return RMSE del modelo
+    metrics = function() {
+      "Cálculo de metricas"
+      residuos <<- Xlb - prediccion
+      rmse <- sqrt(mean(residuos^2))
+      mse <- mean(residuos^2)
+      Xlb_mean <- mean(Xlb)
+      r2 <- sum((prediccion - Xlb_mean)^2) / sum((Xlb - mean(Xlb))^2)
+      metricas <<- list("r2"=r2, "mse"=mse, "rmse"=rmse)
+      return(rmse)
+    },
+
+    #' @description Genera y guarda visualizaciones de resultados (predicción, residuos, histogramas, boxplots) para un tiempo \code{k}.
+    #' @param k Índice temporal para graficar.
+    #' @param output_dir Directorio donde se guardarán los gráficos.
+    #' @return Gráficos guardados como archivos .png
+    graficar_resultados = function(k, output_dir = ".") {
+      "Grafica y guarda resultados para el tiempo k"
+      if (!dir.exists(output_dir)) {
+        dir.create(output_dir, recursive = TRUE)
+      }
+      ruta <- function(nombre_archivo) file.path(output_dir, nombre_archivo)
+      
+      trellis.par.set(list(
+              axis.text = list(cex = 1.8),
+              par.main.text = list(cex = 1.8),
+              par.xlab.text = list(cex = 1.8),
+              par.ylab.text = list(cex = 1.8)
+            ))
+      
+      default_colorkey <- list(
+                                width = 1.8,
+                                labels = list(cex = 1.5)
+                                )
+      
+      min_val <- min(Xb_vb, Xlb, prediccion, na.rm = TRUE)
+      max_val <- max(Xb_vb, Xlb, prediccion, na.rm = TRUE)
+      breaks <- seq(min_val, max_val, length.out = 100)
+      
+      # Gráfico 1: Betas estimados
+      png(filename = ruta("beta_estimado.png"), width = 800, height = 600)
+      print(levelplot(B_mtx,colorkey=default_colorkey, 
+                      col.regions = terrain.colors(100),xlab='',ylab='',main=''))
+      dev.off()
+    
+      # Gráfico 2: Campo Intensidad de viento 1km en t=k
+      png(filename = ruta("X1.png"), width = 800, height = 600)
+      print(levelplot(Xlb[,,k], at=breaks,colorkey=default_colorkey,
+                      col.regions = terrain.colors(100), xlab='',ylab='',main=''))
+      dev.off()
+    
+      # Gráfico 3: Xvb en t=k
+      png(filename = ruta("X3_v3.png"), width = 800, height = 600)
+      print(levelplot(Xb_vb[,,k], at=breaks, col.regions = terrain.colors(100),
+                      xlab='',ylab='',main=''))
+      dev.off()
+    
+      # Gráfico 4: Predicción en t=k
+      png(filename = ruta("X1_pred.png"), width = 800, height = 600)
+      print(levelplot(prediccion[,,k], at=breaks, col.regions = terrain.colors(100),
+                      xlab='',ylab='',main=''))
+      dev.off()
+    
+      # Gráfico 5: Residuos en t=k
+      png(filename = ruta("residuos.png"), width = 800, height = 600)
+      print(levelplot(residuos[,,k], col.regions = terrain.colors(100),xlab='',ylab='',main=''))
+
+      dev.off()
+      
+      # ===================== HISTOGRAMA de betas ====================
+      png(filename = ruta("hist_beta_est.png"), width = 800, height = 600)
+      df_beta <- data.frame(B = B)
+      p_beta <- ggplot(df_beta, aes(x = B)) +
+        geom_histogram(
+          bins = 100, fill = "#69b3a2", color = "black"
+        ) +
+        labs(x = "", y = "", title = "") +
+        theme_classic(base_size = 14) +
+        theme(
+          axis.title = element_blank(),
+          axis.text = element_text(face = "bold"),
+          plot.title = element_text(hjust = 0.5)
+        )
+      print(p_beta)
+      dev.off()
+      
+      # ===================== NUEVO: Límites comunes para histogramas y boxplots 
+      png(filename = ruta("hist_res.png"), width = 900, height = 700)  # Imagen más grande
+      hist_vals <- as.vector(residuos[,,k])
+      lim <- max(abs(residuos), na.rm = TRUE)  # límite simétrico
+      
+      hist(hist_vals,
+           breaks = 50,
+           col = "#69b3a2",
+           border = "white",
+           xlab = "", ylab = "", main = "",
+           xlim = c(-lim, lim),
+           axes = TRUE)
+      
+      box(lwd = 2.5)  # Marco más grueso
+      dev.off()
+      
+      # Boxplot de residuos con marco y caja más angosta
+      df <- data.frame(residuos = as.vector(residuos[,,k]))
+      p <- ggplot(df, aes(x = "", y = residuos)) +
+        stat_boxplot(geom = "errorbar", width = 0.3, color = "grey40") +  # caja más angosta
+        geom_boxplot(width = 0.5, fill = "#69b3a2", outlier.colour = "firebrick", 
+                     outlier.shape = 2, outlier.size = 3, alpha = 0.9) +
+        coord_flip() +
+        scale_y_continuous(limits = c(-lim, lim)) +
+        theme_classic(base_size = 12) +  # fondo blanco sin grillas
+        theme(
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          panel.border = element_rect(colour = "black", fill = NA, size = 0.5)  # marco
+        ) +
+        labs(x = "", y = "", title = "")
+      
+      ggsave(ruta("boxplot_res.png"), p, width = 8, height = 6, dpi = 300)
+
+    }
+  )
+)
+```
+
+```{r Clase VC LOO, eval = FALSE}
+GTWRbase$methods(
+loo_cv_por_cluster = function(D1, D2, h1_vals, h2_vals, class_3, verbose = TRUE) {
+  n <- dim(Xb_vb)[1]
+  m <- dim(Xb_vb)[2]
+  t <- dim(Xb_vb)[3]
+  nm <- n * m
+  class_3 <- as.vector(class_3)
+  # Conversión arrays 3D a 2D
+  Xb_mat <- matrix(NA_real_, nrow = nm, ncol = t)
+  Xl_mat <- matrix(NA_real_, nrow = nm, ncol = t)
+  for (k in 1:t) {
+    Xb_mat[, k] <- as.vector(Xb_vb[,,k])
+    Xl_mat[, k] <- as.vector(Xlb[,,k])
+  }
+  
+  clusters <- sort(unique(as.vector(class_3)))
+  resultados <- list()
+  
+  # Barra progreso clusters
+  pb_clusters <- txtProgressBar(min = 0, max = length(clusters), style = 3)
+  for (i_cl in seq_along(clusters)) {
+    cl <- clusters[i_cl]
+
+    idx_cl <- which(class_3 == cl)
+    n_cl <- length(idx_cl)
+    if (verbose) message(sprintf("Iniciando cluster %d/%d con %d puntos", i_cl, length(clusters), n_cl))
+    if (n_cl < 3) {
+      warning(sprintf("Cluster %d con menos de 3 puntos, salto CV", cl))
+      setTxtProgressBar(pb_clusters, i_cl)
+      next
+    }
+    
+    mejor_rmse <- Inf
+    mejor_h1 <- NA
+    mejor_h2 <- NA
+    
+    D1_cl <- D1[idx_cl, idx_cl]
+    D2_cl <- D2[idx_cl, idx_cl]
+    Xb_cl <- Xb_mat[idx_cl, , drop = FALSE]
+    Xl_cl <- Xl_mat[idx_cl, , drop = FALSE]
+    
+    # Barra progreso combinaciones h1,h2
+    total_param <- length(h1_vals) * length(h2_vals)
+    pb_params <- txtProgressBar(min = 0, max = total_param, style = 3)
+    cnt_param <- 0
+    
+    for (h1 in h1_vals) {
+      for (h2 in h2_vals) {
+        cnt_param <- cnt_param + 1
+        
+        rmse_fold <- numeric(n_cl)
+        for (loo_i in seq_len(n_cl)) {
+          train_idx <- setdiff(seq_len(n_cl), loo_i)
+          test_idx <- loo_i
+          
+          W_space <- exp(-(D1_cl[test_idx, train_idx]^2) / (2 * h1^2))
+          W_dist  <- exp(-(D2_cl[test_idx, train_idx]^2) / (2 * h2^2))
+          W_full  <- W_space * W_dist
+          
+          preds <- numeric(t)
+          obs <- numeric(t)
+          for (k in 1:t) {
+            num <- sum(W_full * (Xl_cl[train_idx, k] * Xb_cl[train_idx, k]))
+            den <- sum(W_full * (Xb_cl[train_idx, k]^2))
+            beta_hat <- ifelse(den != 0, num / den, 0)
+            preds[k] <- beta_hat * Xb_cl[test_idx, k]
+            obs[k] <- Xl_cl[test_idx, k]
+          }
+          
+          rmse_fold[loo_i] <- sqrt(mean((preds - obs)^2))
+        }
+        
+        rmse_promedio <- mean(rmse_fold)
+        if (rmse_promedio < mejor_rmse) {
+          mejor_rmse <- rmse_promedio
+          mejor_h1 <- h1
+          mejor_h2 <- h2
+        }
+        
+        setTxtProgressBar(pb_params, cnt_param)
+      }
+    }
+    close(pb_params)
+    
+    resultados[[as.character(cl)]] <- list(
+      cluster = cl,
+      h1_opt = mejor_h1,
+      h2_opt = mejor_h2,
+      rmse = mejor_rmse
+    )
+    
+    if (verbose) message(sprintf("Cluster %d: h1_opt=%.4g, h2_opt=%.4g, RMSE=%.4g", 
+                                 cl, mejor_h1, mejor_h2, mejor_rmse))
+    # message(sprintf("Iniciando cluster %d/%d con %d puntos", i_cl, length(clusters), n_cl))
+    
+    setTxtProgressBar(pb_clusters, i_cl)
+  }
+  close(pb_clusters)
+  
+  return(resultados)
+}
+
+)
+
+GTWRbase$methods(
+  estimar_beta_por_cluster = function(class_3, params_cluster, D1, D2) {
+    # class_3: vector de cluster para cada punto (de tamaño n*m)
+    # params_cluster: lista con elementos por cluster, cada uno con h1 y h2
+    # D1, D2: matrices de distancia espacial y distribucional (n*m x n*m)
+    
+    n <- dim(Xb_vb)[1]
+    m <- dim(Xb_vb)[2]
+    t <- dim(Xb_vb)[3]
+    nm <- n * m
+    
+    # Vectorizar los datos 3D en 2D matrices [nm x t]
+    Xb_mat <- matrix(NA_real_, nrow = nm, ncol = t)
+    Xl_mat <- matrix(NA_real_, nrow = nm, ncol = t)
+    for (k in 1:t) {
+      Xb_mat[, k] <- as.vector(Xb_vb[,,k])
+      Xl_mat[, k] <- as.vector(Xlb[,,k])
+    }
+    
+    B <- numeric(nm) # almacenar coeficientes
+    
+    clusters <- unique(class_3)
+    
+    for (cl in clusters) {
+      idx_cl <- which(class_3 == cl)
+      h1 <- params_cluster[[as.character(cl)]]$h1
+      h2 <- params_cluster[[as.character(cl)]]$h2
+      
+      # Construir matriz de pesos W para puntos en cluster cl
+      D1_cl <- D1[idx_cl, idx_cl]
+      D2_cl <- D2[idx_cl, idx_cl]
+      W_cl <- exp(-(D1_cl^2) / (2 * h1^2)) * exp(-(D2_cl^2) / (2 * h2^2))
+      
+      # Para cada punto en cluster calcular beta_i
+      for (i_local in seq_along(idx_cl)) {
+        i_global <- idx_cl[i_local]
+        Wi <- W_cl[i_local, ]
+        
+        # Vector de Xb y Xl para entrenamiento (todos puntos en cluster)
+        Xb_train <- Xb_mat[idx_cl, , drop = FALSE]
+        Xl_train <- Xl_mat[idx_cl, , drop = FALSE]
+        
+        # Calcular numerador y denominador por suma temporal y espacial
+        num <- sum(Wi * colSums(Xl_train * Xb_train, dims = 2, na.rm = TRUE), na.rm = TRUE)
+        den <- sum(Wi * colSums(Xb_train * Xb_train, dims = 2, na.rm = TRUE), na.rm = TRUE)
+        
+        beta_hat <- ifelse(den != 0, num / den, 0)
+        B[i_global] <- beta_hat
+      }
+    }
+    
+    B_mtx <<- matrix(B, n, m, byrow = TRUE)
+    B <<- B
+    
+    return(B_mtx)
+  },
+  
+  gtwr_model_por_cluster = function() {
+    # Predicción usando B_mtx estimado por cluster
+    n <- dim(Xb_vb)[1]
+    m <- dim(Xb_vb)[2]
+    t <- dim(Xb_vb)[3]
+    
+    prediccion <<- array(NA_real_, dim = c(n, m, t))
+    
+    for (k in 1:t) {
+      prediccion[,,k] <<- B_mtx * Xb_vb[,,k]
+    }
+    
+    return(prediccion)
+  }
+)
+
+
+```
+
+```{r h1 y h2 TLOO-CV, eval = FALSE}
+Xb_vb <- get.xvb(ws3)
+Xlb <- ws1
+
+# Crear instancia del modelo GTWRbase
+modelo <- GTWRbase$new(
+  Xb_vb = Xb_vb,
+  Xlb = Xlb
+)
+
+# Definir secuencias de anchos de banda
+h1_vals <- seq(300, 600, length.out = 10)
+h2_vals <- seq(0.01, 1, length.out = 10)
+
+library(tictoc)
+tic("LOO-CV espacial")
+
+resultados_cv <- modelo$loo_cv_por_cluster(
+  D1 = Eucl_dist_mtx,
+  D2 = Distr_dist_mtx,
+  h1_vals = h1_vals,
+  h2_vals = h2_vals,
+  class_3 = c3.1km.fixed,
+  verbose = TRUE
+)
+
+elapsed <- toc(log = TRUE)
+segundos <- elapsed$toc - elapsed$tic
+horas <- segundos / 3600
+cat(sprintf("Tiempo de ejecución: %.4f horas\n", horas))
+```
+
+Para cada Xv3 utilizado en el modelo GTWR debemos tener una distancias distribucional ajustada a los datos
+y mantendremos la parametrización de las distancia para utilizar una única distancia espacio temporal. 
+
+```{r matriz de distancia}
+#CALCULAMOS DISTANCIAS
+#Distribucional
+sd_ws1 <- apply(Xb_vb, c(2, 1), sd)
+sd_vector <- as.vector(sd_ws1)
+Distr_dist_mtx <- outer(sd_vector, sd_vector, FUN = function(x, y) abs(x - y))
+
+#Espacial
+library(geodist)
+coords <- cbind(as.vector(t(long1km)), as.vector(t(lat1km)))
+Eucl_dist_mtx <- geodist(coords, measure = "haversine")
+
+# i=70*4
+# levelplot(matrix(SD_dist_mtx[i,],nrow=90,ncol=63,byrow=TRUE),col.regions=terrain.colors(100), main = 'distancias distribucionales para serie i')
+# 
+# levelplot(matrix(Eucl_dist_mtx[i,],nrow=90,ncol=63,byrow=TRUE),col.regions=terrain.colors(100), main = 'distancias euclidiana para serie i')
+```
+
+#### Aplicando modelo GTWR
+
+```{r modelo GTWR vecino mas cercano}
+Xb_vb <- get.xvb(ws3)
+Xlb <- ws1
+#Seteamos distancias espacial y distribucional
+D <- Eucl_dist_mtx/10000 + SD_dist_mtx/0.01
+h <- 0.02
+W <- exp(-(D/h))
+levelplot((matrix(W[200,],90,63, byrow = TRUE)),
+          colorkey=default_colorkey,xlab='',ylab='',main='')
+
+ruta_train <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/entrenamiento"
+
+base <- GTWRbase$new(Xb_vb=Xb_vb_bicub, Xlb=Xlb, W=W)
+beta <- base$estimar_beta()
+pred <- base$gtwr_model()
+metrics <- base$metrics()
+for (k in seq(from=2, by=dim(Xvb)[3]%/%4, length.out=4)){
+  ruta_train_k <- str_c(ruta_train, paste("/t_", k, sep=""))
+  base$graficar_resultados(k = k, output_dir = ruta_train_k)
+}
+```
+
+```{r campos de metricas MSE y R^2 temporales}
+library(lattice)
+
+calc_metrics_per_point_fast <- function(pred, obs, out_dir = "metric_maps") {
+  stopifnot(all(dim(pred) == dim(obs)))
+  
+  # Crear directorio si no existe
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+  
+  n  <- dim(pred)[1]
+  m  <- dim(pred)[2]
+  t  <- dim(pred)[3]
+  nm <- n * m
+  
+  # Aplanar a matrices (nm x t)
+  pred_mat <- matrix(pred, nrow = nm, ncol = t)
+  obs_mat  <- matrix(obs,  nrow = nm, ncol = t)
+  
+  # MSE
+  mse_vec <- rowMeans((pred_mat - obs_mat)^2, na.rm = TRUE)
+  
+  # R²
+  mean_obs <- rowMeans(obs_mat, na.rm = TRUE)
+  ss_res <- rowSums((pred_mat - obs_mat)^2, na.rm = TRUE)
+  ss_tot <- rowSums((obs_mat - mean_obs)^2, na.rm = TRUE)
+  r2_vec <- ifelse(ss_tot > 0, 1 - ss_res / ss_tot, NA_real_)
+  
+  # Volver a formato (n x m)
+  mse_map <- matrix(mse_vec, nrow = n, ncol = m)
+  r2_map  <- matrix(r2_vec, nrow = n, ncol = m)
+  
+  # Guardar mapas con levelplot
+  png(file.path(out_dir, "MSE_map.png"), width = 1200, height = 1000, res = 200)
+  print(levelplot(mse_map, main = "", xlab = "", ylab = "",
+                  col.regions = terrain.colors(100)))
+  dev.off()
+  
+  png(file.path(out_dir, "R2_map.png"), width = 1200, height = 1000, res = 200)
+  print(levelplot(r2_map, main = "", xlab = "", ylab = "",
+                  col.regions = terrain.colors(100)))
+  dev.off()
+  
+  return(list(MSE = mse_map, R2 = r2_map))
+}
+
+# Ejemplo de uso
+metrics <- calc_metrics_per_point_fast(pred, Xlb, out_dir = str_c(ruta_train,"/metricas_temporales"))
+mse_map <- metrics$MSE
+r2_map  <- metrics$R2
+
+
+# residuos <- base$residuos
+
+```
+
+```{r pruebas estacionariedad local residuos}
+if (!requireNamespace("urca", quietly = TRUE)) install.packages("urca")
+library(urca)
+
+res_mar <- residuos[13:15, 31:33,] # vecindad mar
+res_valle <- residuos[43:45, 46:48,] # vecindad valle
+res_mont <- residuos[79:81, 22:24,] # vecindad montaña
+
+# Función para obtener PP-test y estacionariedad 5%
+pp_por_vecindad <- function(arr3) {
+  nrows <- dim(arr3)[1]
+  ncols <- dim(arr3)[2]
+  resultados <- data.frame(
+    punto = character(),
+    valor = numeric(),
+    estacionaria_5pct = logical(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (i in 1:nrows) {
+    for (j in 1:ncols) {
+      serie <- as.numeric(arr3[i, j, ])
+      serie <- serie[!is.na(serie)]
+      if (length(serie) > 3 && var(serie) > 0) {
+        pp_r <- ur.pp(serie, type = "Z-tau", model = "constant", lags = "short")
+        val <- as.numeric(pp_r@teststat)
+        # crit_5pct <- as.numeric(pp_r@cval["1pct"])
+        # estacionaria <- val < crit_5pct
+        crit_5pct <- as.numeric(pp_r@cval[1, "5pct"])
+        # estacionaria <- val < crit_5pct
+      } else {
+        val <- NA
+        estacionaria <- NA
+      }
+      resultados <- rbind(resultados, data.frame(
+        punto = sprintf("s_%d_%d", i, j),
+        valor = val,
+        estacionaria_5pct = crit_5pct
+      ))
+    }
+  }
+  return(resultados)
+}
+
+# Función para generar tabla LaTeX
+tabla_pp_latex <- function(arr3, nombre_vecindad) {
+  df <- pp_por_vecindad(arr3)
+  puntos <- df$punto
+  stats_row <- sprintf("%.3f", df$valor)
+  est_row <- sprintf("%.3f",df$estacionaria_5pct)
+  
+  cat("\\begin{table}[H]\n")
+  cat("\\centering\n")
+  cat(sprintf("\\caption{Resultados del PP-test para vecindad %s}\n", nombre_vecindad))
+  cat("\\begin{tabular}{l", paste(rep("c", length(puntos)), collapse=""), "}\n", sep="")
+  cat("\\hline\n")
+  cat(" & ", paste(puntos, collapse = " & "), " \\\\\n")
+  cat("\\hline\n")
+  cat("PP-stats & ", paste(stats_row, collapse = " & "), " \\\\\n")
+  cat("PP al 5\\% & ", paste(est_row, collapse = " & "), " \\\\\n")
+  cat("\\hline\n")
+  cat("\\end{tabular}\n")
+  cat("\\end{table}\n\n")
+}
+
+# Ejemplo: generar 1 tabla por vecindad
+tabla_pp_latex(res_mar, "Mar")
+tabla_pp_latex(res_valle, "Valle")
+tabla_pp_latex(res_mont, "Montaña")
+
+```
+
+```{r}
+# Tiempos a evaluar
+tiempos <- c(2, 20, 38, 56)
+
+# Inicializar dataframe de resultados
+tabla_metricas_tiempo <- data.frame(
+  Tiempo = tiempos,
+  MSE = numeric(length(tiempos)),
+  RMSE = numeric(length(tiempos)),
+  R2 = numeric(length(tiempos))
+)
+
+# Calcular métricas para cada tiempo
+for (i in seq_along(tiempos)) {
+  t <- tiempos[i]
+  obs <- as.vector(base$Xlb[,,t])
+  pred <- as.vector(base$prediccion[,,t])
+  
+  mse <- mean((obs - pred)^2, na.rm = TRUE)
+  rmse <- sqrt(mse)
+  r2 <- sum((pred - mean(obs, na.rm = TRUE))^2, na.rm = TRUE) / 
+        sum((obs - mean(obs, na.rm = TRUE))^2, na.rm = TRUE)
+  
+  tabla_metricas_tiempo[i, 2:4] <- c(mse, rmse, r2)
+}
+library(xtable)
+
+# Redondeamos para estética
+tabla_metricas_tiempo_fmt <- tabla_metricas_tiempo
+tabla_metricas_tiempo_fmt$MSE <- formatC(tabla_metricas_tiempo$MSE, format="f", digits=5)
+tabla_metricas_tiempo_fmt$RMSE <- formatC(tabla_metricas_tiempo$RMSE, format="f", digits=5)
+tabla_metricas_tiempo_fmt$R2 <- formatC(tabla_metricas_tiempo$R2, format="f", digits=4)
+
+# Crear tabla LaTeX
+tabla_latex <- xtable(tabla_metricas_tiempo_fmt, 
+                      align = c("r", "r", "|", "r", "r", "r"),
+                      caption = "Métricas de validación temporal del modelo GTWR.",
+                      label = "tab:metricas_tiempo")
+
+# Imprimir código LaTeX
+print(tabla_latex, include.rownames = FALSE, sanitize.text.function = identity)
+
+```
+
+```{r}
+#ESTACIONARIEDAD LOCAL DE LOS RESIDUOS
+#gráficas de los residuos temporales 
+graficar_vecindad_residuos <- function(residuos, i, j, output_dir = ".") {
+  if (length(dim(residuos)) != 3) {
+    stop("El objeto 'residuos' debe ser un array tridimensional (lon x lat x tiempo).")
+  }
+
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+
+  dims <- dim(residuos)
+  if (i < 2 || i > (dims[1] - 1) || j < 2 || j > (dims[2] - 1)) {
+    stop("Para una vecindad 3x3, i y j deben estar entre 2 y (n-1).")
+  }
+
+  z_val <- qnorm(0.995)  # 99% confidence
+  df_total <- data.frame()
+  nombres_vecindad <- matrix(paste0("s_", rep(1:3, each = 3), rep(1:3, times = 3)), nrow = 3, byrow = TRUE)
+
+  count <- 1
+  residuos_vecindad <- c()
+
+  for (ii in (i-1):(i+1)) {
+    for (jj in (j-1):(j+1)) {
+      serie <- residuos[ii, jj, ]
+      residuos_vecindad <- c(residuos_vecindad, serie)
+
+      df <- data.frame(
+        Tiempo = 1:dims[3],
+        Residuo = as.vector(serie),
+        Punto = nombres_vecindad[count]
+      )
+
+      df_total <- rbind(df_total, df)
+      count <- count + 1
+    }
+  }
+
+  # Banda de estacionariedad (±2.576σ)
+  sigma <- sd(residuos_vecindad, na.rm = TRUE)
+  limite_inferior <- -z_val * sigma
+  limite_superior <-  z_val * sigma
+
+  if (!requireNamespace("ggplot2", quietly = TRUE)) install.packages("ggplot2")
+  library(ggplot2)
+
+  g <- ggplot(df_total, aes(x = Tiempo, y = Residuo, color = Punto)) +
+    # Banda sombreada de estacionariedad
+    annotate("rect", xmin = -Inf, xmax = Inf,
+             ymin = limite_inferior, ymax = limite_superior,
+             fill = "gray70", alpha = 0.3) +
+    # Líneas de banda de estacionariedad
+    geom_hline(yintercept = limite_inferior, linetype = "dashed", linewidth = 1.2, color = "gray30") +
+    geom_hline(yintercept = limite_superior, linetype = "dashed", linewidth = 1.2, color = "gray30") +
+    # Línea base
+    geom_hline(yintercept = 0, linetype = "dotted", color = "black") +
+    # Series temporales
+    geom_line(linewidth = 1) +
+    labs(
+      title = paste("Series de residuos vecindad mar", i, j),
+      x = "Tiempo",
+      y = "Residuo",
+      color = "Punto"
+    ) +
+    scale_color_brewer(palette = "Set1") +
+    theme_minimal(base_size = 16) +
+    theme(
+      legend.position = "right",
+      axis.title = element_text(size = 18, face = "bold"),
+      axis.text = element_text(size = 14),
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 16, face = "bold"),
+      plot.title = element_text(size = 18, face = "bold")
+    )
+
+  file_name <- file.path(output_dir, paste0("residuos_vecindad3x3_estacionario_", i, "_", j, ".png"))
+  ggsave(filename = file_name, plot = g, width = 11, height = 6, dpi = 300)
+
+  message("Gráfico guardado en: ", normalizePath(file_name))
+}
+
+```
+
+```{r}
+
+residuos <- ws1 - pred
+output_dir <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/entrenamiento/residuos_temporales"
+ki <- 15
+kj <- 16
+graficar_vecindad_residuos(residuos, i=(3*ki - 1), j=(3*kj - 1), output_dir)
+
+```
+
+
+```{r}
+graficar_comparacion_vecindad <- function(Xvb, ws1, pred, i_range, j_range, nombre_vecindad, output_dir = ".") {
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+
+  n_tiempo <- dim(ws1)[3]
+  
+  # Paleta mejorada
+  colores <- c("Predictor" = "#6c757d",    # Gris neutro
+               "Real" = "#3498db",         # Azul estándar
+               "Estimada" = "#e74c3c")     # Rojo vibrante
+  
+  y_max <- max(Xvb, ws1, pred, na.rm = TRUE)
+  serie_predictora <- Xvb[i_range[2],j_range[2],]
+  
+  # Data frame para almacenar métricas
+  metricas_df <- data.frame()
+  
+  for (i in 1:3) {
+    for (j in 1:3) {
+      serie_real <- ws1[i_range[i], j_range[j], ]
+      serie_pred <- pred[i_range[i], j_range[j], ]
+      
+      # Calcular métricas
+      mse <- mean((serie_real - serie_pred)^2, na.rm = TRUE)
+      rmse <- sqrt(mse)
+      r2 <- 1 - (sum((serie_real - serie_pred)^2, na.rm = TRUE) / 
+                 sum((serie_real - mean(serie_real, na.rm = TRUE))^2, na.rm = TRUE))
+      
+      # Guardar métricas
+      metricas_df <- rbind(metricas_df, data.frame(
+        Vecindad = nombre_vecindad,
+        Punto_i = i,
+        Punto_j = j,
+        R2 = r2,
+        MSE = mse,
+        RMSE = rmse
+      ))
+
+      df <- data.frame(
+        Tiempo = 1:n_tiempo,
+        Predictor = as.vector(serie_predictora),
+        Real = as.vector(serie_real),
+        Estimada = as.vector(serie_pred)
+      )
+
+      df_melt <- melt(df, id.vars = "Tiempo")
+      df_melt$variable <- factor(df_melt$variable, levels = c("Predictor", "Real", "Estimada"))
+
+      g <- ggplot(df_melt, aes(x = Tiempo, y = value, color = variable)) +
+        theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5)) +
+        geom_line(aes(linewidth = variable), alpha = 0.9) +
+        scale_color_manual(
+          values = colores,
+          labels = c(
+            bquote(X[v[3](s[.(i)][.(j)])]^{(3)}),
+            bquote(X[s[.(i)][.(j)]]^{(1)}),
+            bquote(hat(X)[s[.(i)][.(j)]]^{(1)})
+          )
+        ) +
+        scale_linewidth_manual(
+          values = c("Predictor" = 1, "Real" = 1, "Estimada" = 1.2),
+          guide = "none"
+        ) +
+        coord_cartesian(ylim = c(0, y_max)) +
+        labs(
+          title = "",
+          x = "",
+          y = "",
+          color = ""
+        ) +
+        theme_minimal(base_size = 18) +   # aumenta base general
+        theme(
+          axis.title = element_text(size = 20),
+          axis.text = element_text(size = 22),    # ejes más grandes
+          legend.text = element_text(size = 30),  # texto de leyenda más grande
+          legend.title = element_text(size = 30, face = "bold"), # título leyenda grande y en negrita
+          legend.text.align = 0,
+          plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+          legend.position = c(0.98, 1),
+          legend.justification = c("right", "top"),
+          legend.background = element_rect(fill = ggplot2::alpha("white", 0.1), color = NA),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white", color = "black", linewidth = 0.5)
+        )
+
+      # Guardar gráfico
+      file_name <- file.path(output_dir, paste0("comparacion_", nombre_vecindad, "_s", i, j, ".png"))
+      ggsave(file_name, g, width = 8, height = 6, dpi = 500, bg = "white")
+    }
+  }
+  
+  # Guardar métricas en CSV
+  metrics_file <- file.path(output_dir, paste0("metricas_", nombre_vecindad, ".csv"))
+  write.csv(metricas_df, metrics_file, row.names = FALSE)
+  
+  # Devolver métricas (opcional)
+  return(metricas_df)
+}
+```
+
+```{r}
+# Uso de la función
+output_dir_base <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/entrenamiento/analisis_temporal"
+
+# Mar (y capturar métricas)
+metricas_mar <- graficar_comparacion_vecindad(Xvb, ws1, pred, c(13:15), c(31:33), "mar", file.path(output_dir_base, "mar"))
+
+# Valle
+metricas_valle <- graficar_comparacion_vecindad(Xvb, ws1, pred, c(41:43), c(11:13), "valle", file.path(output_dir_base, "valle"))
+
+# Montaña
+metricas_mont <- graficar_comparacion_vecindad(Xvb, ws1, pred, c(77:79), c(20:22), "mont", file.path(output_dir_base, "mont"))
+
+agregar_sij <- function(metricas_df) {
+  metricas_df$Punto <- paste0("$s_{", metricas_df$Punto_i, metricas_df$Punto_j, "}$")
+  metricas_df <- metricas_df[, c("Punto", "MSE", "RMSE", "R2")]
+  metricas_df$MSE <- formatC(metricas_df$MSE, format = "f", digits = 5)
+  metricas_df$RMSE <- formatC(metricas_df$RMSE, format = "f", digits = 5)
+  metricas_df$R2 <- formatC(metricas_df$R2, format = "f", digits = 4)
+  return(metricas_df)
+}
+
+tabla_mar <- agregar_sij(metricas_mar)
+tabla_valle <- agregar_sij(metricas_valle)
+tabla_mont <- agregar_sij(metricas_mont)
+
+library(xtable)
+
+imprimir_tabla_latex <- function(df, nombre_vecindad) {
+  tabla_xtable <- xtable(df,
+                         align = c("r", "r", "|", "r", "r", "r"),
+                         caption = paste("Métricas por punto en la vecindad de", nombre_vecindad),
+                         label = paste0("tab:metricas_", nombre_vecindad))
+  
+  print(tabla_xtable,
+        include.rownames = FALSE,
+        sanitize.text.function = identity,
+        caption.placement = "top")
+}
+
+# Mar
+imprimir_tabla_latex(tabla_mar, "mar")
+
+# Valle
+imprimir_tabla_latex(tabla_valle, "valle")
+
+# Montaña
+imprimir_tabla_latex(tabla_mont, "montaña")
+
+
+```
+
+
+```{r}
+ruta_analisis <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/entrenamiento/residuos_temporales"
+y_min <- min(res_mar, res_valle, res_mont)
+y_max <- max(res_mar, res_valle, res_mont)
+analisis_vecindad(res_mar, "mar", str_c(ruta_analisis, "/mar"), ylim_i = y_min, ylim_f = y_max)
+analisis_vecindad(res_valle, "valle", str_c(ruta_analisis, "/valle"), ylim_i = y_min, ylim_f = y_max)
+analisis_vecindad(res_mont, "mont", str_c(ruta_analisis, "/mont"), ylim_i = y_min, ylim_f = y_max)
+```
+
+
+#### Clasificación de residuos FPC
+
+```{r}
+sd_red <- apply(base$residuos, c(1, 2), sd)
+sd_vector <- as.vector(sd_red)
+SD_RES_DIST <- outer(sd_vector, sd_vector, FUN = function(x, y) abs(x - y))
+
+library(cluster)
+hc_res <- agnes(SD_RES_DIST, diss = TRUE, method = "complete")
+
+cluster_3_res <- cutree(as.hclust(hc_res), k = 4)
+levelplot(matrix(cluster_3_res, nrow = dim(ws1)[1], ncol = dim(ws1)[2]),
+          col.regions=terrain.colors(100),xlab="",ylab="", main="Clasificación FCP 1km k=3")
+```
+
+
+### Predicción malla 1/3 km
+
+```{r OOP clase predictora}
+#' GTWRPredictor: Clase para modelado y predicción con GTWR (Geographically and Temporally Weighted Regression)
+#'
+#' Esta clase permite aplicar un modelo de regresión ponderada en el espacio y tiempo,
+#' realizar interpolaciones espaciales sobre los coeficientes beta y generar visualizaciones
+#' de los resultados modelados y predichos.
+#'
+#' @field Xlb_pred Array resultante de aplicar el modelo GTWR, con predicciones espaciales de alta resolución.
+#' @field Xb_vb Array que representa los datos de entrada espaciales y temporales con resolución gruesa.
+#' @field B_mtx Matriz de coeficientes beta espacialmente distribuidos.
+#'
+#' @section Métodos:
+#' \describe{
+#'   \item{\code{gtwr_model()}}{Aplica el modelo GTWR multiplicando \code{B_mtx} por cada capa temporal de \code{Xb_vb}.}
+#'   \item{\code{beta_adapted(method = "knn", k = 1)}}{Realiza interpolación espacial sobre \code{B_mtx} utilizando KNN o interpolación bicúbica.}
+#'   \item{\code{graficar_resultados(k, output_dir = ".")}}{Genera y guarda mapas de \code{Xb_vb[,,k]} y \code{Xlb_pred[,,k]} como imágenes PNG.}
+#' }
+#'
+#' @examples
+#' \dontrun{
+#' modelo <- GTWRPredictor$new(
+#'   Xlb_pred = array(0, dim = c(90, 63, 72)),
+#'   Xb_vb = array(rnorm(30 * 21 * 72), dim = c(30, 21, 72)),
+#'   B_mtx = matrix(runif(30 * 21), nrow = 30)
+#' )
+#' modelo$beta_adapted(method = "knn", k = 1)
+#' modelo$gtwr_model()
+#' modelo$graficar_resultados(k = 1, output_dir = "resultados/")
+#' }
+#'
+#' @importFrom FNN get.knnx
+#' @import fields
+#' @import lattice
+#' @importFrom akima bicubic.grid
+#' @export
+GTWRPredictor <- setRefClass(
+  "GTWR Predictor",
+  fields = list(
+    Xlb_pred = "array",
+    Xb_vb = "array",
+    B_mtx = "matrix"
+  ),
+
+  methods = list(
+    gtwr_model = function() {
+      n <- dim(Xb_vb)[1]
+      m <- dim(Xb_vb)[2]
+      t <- dim(Xb_vb)[3]
+      Xlb_pred <<- Xb_vb
+      for (k in 1:t) {
+        Xlb_pred[,,k] <<- B_mtx * Xb_vb[,,k]
+      }
+    },
+
+    beta_adapted = function(method = 'knn', k=1) {
+      n_old <- dim(B_mtx)[1]
+      m_old <- dim(B_mtx)[2]
+      n <- n_old * 3
+      m <- m_old * 3
+      
+      x_old <- seq(1, n_old)
+      y_old <- seq(1, m_old)
+      x_new <- seq(1, n_old, length.out = n)
+      y_new <- seq(1, m_old, length.out = m)
+      
+      if (method == 'knn') {
+        library(FNN)
+        # Interpolación KNN
+        x_fino <- seq(1, n, by = 1)
+        y_fino <- seq(1, m, by = 1)
+        x_grueso <- seq(1, n, by = 3)
+        y_grueso <- seq(1, m, by = 3)
+      
+        grid_fino <- expand.grid(x_fino, y_fino)
+        grid_grueso <- expand.grid(x_grueso, y_grueso)
+      
+        nn_indices <- get.knnx(data = grid_grueso, query = grid_fino, k = k)$nn.index
+        z_grueso <- as.vector(B_mtx)
+        z_interp <- z_grueso[nn_indices]
+        B_new <- matrix(z_interp, nrow = n, ncol = m)
+      
+      } else if (method == 'bicubica') {
+        if (!requireNamespace("akima", quietly = TRUE)) {
+          install.packages("akima")
+        }
+        library(akima)
+        # Interpolación bicúbica con akima
+        interp_result <- bicubic.grid(x = x_old, y = y_old, z = B_mtx,
+                                      nx = n, ny = m)
+        B_new <- interp_result$z
+      } else {
+        stop("Método no reconocido. Usa 'knn' o 'bicubica'.")
+      }
+      
+      B_mtx <<- B_new
+    },
+
+    graficar_resultados = function(k, output_dir = ".") {
+      if (!dir.exists(output_dir)) {
+        dir.create(output_dir, recursive = TRUE)
+      }
+
+      ruta <- function(filename) {
+        file.path(output_dir, filename)
+      }
+      
+      min_val <- min(Xb_vb, Xlb_pred, na.rm = TRUE)
+      max_val <- max(Xb_vb, Xlb_pred, na.rm = TRUE)
+      breaks <- seq(min_val, max_val, length.out = 100)
+      
+      png(filename = ruta("X1_v1.png"), width = 800, height = 600)
+      print(levelplot(Xb_vb[,,k], at=breaks, col.regions = terrain.colors(100), 
+                      colorkey=default_colorkey,xlab='',ylab='',main=''))
+      dev.off()
+
+      png(filename = ruta("Xtercio_pred.png"), width = 800, height = 600)
+      print(levelplot(Xlb_pred[,,k], at=breaks, col.regions = terrain.colors(100),
+                      colorkey=default_colorkey,xlab='',ylab='',,main=''))
+      dev.off()
+    }
+  )
+)
+
+```
+
+
+Aquí realizamos la predicción de la malla de 1/3 km, usando el factor de escala en el modelo de downscaling para las mallas de 3km a 1km, para un h arbitrario u optimizado (alcances futuros).
+
+```{r}
+Xb_vb <- get_xvb(ws1)
+B_mtx <- base$B_mtx
+
+# Simulación ejemplo
+ruta_pred <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/predictions"
+methods <- c("knn","bicubica")
+for(metodo in methods){
+  Predictor <- GTWRPredictor$new(Xb_vb = Xb_vb, B_mtx = B_mtx)
+  Predictor$beta_adapted(method=metodo) #knn default k=1
+  Predictor$gtwr_model()
+  for (k in seq(from=2, by=dim(Xb_vb)[3]%/%4, length.out=4)){
+    ruta_pred_k <- str_c(ruta_pred, paste0('/',metodo), paste("/t_", k, sep=""))
+    Predictor$graficar_resultados(k = k, output_dir = ruta_pred_k)
+  } 
+}
+```
+
+### Comparación de campo 3km, 1km y 1/3km
+
+```{r}
+graficas_comparacion_campos_downscaling <- function(X3, X1, X1_3, centros_i, centros_j, output_dir = ".") {
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+
+  N <- dim(X3)[1]
+  M <- dim(X3)[2]
+  n_tiempo <- dim(X3)[3]
+  
+  # Paleta mejorada
+  colores <- c("X3" = "#3498db",    # Gris neutro
+               "X1" = "#800080",         # Azul estándar
+               "X1_3" = "#e74c3c")     # Rojo vibrante
+  
+  y_max <- max(X3, X1, X1_3, na.rm = TRUE)
+  
+  # Data frame para almacenar métricas
+  metricas_df <- data.frame()
+  
+  # Parámetros espaciales
+  lon3 <- dim(X3)[1]
+  lon1 <- dim(X1)[1]
+  lon1_3 <- dim(X1_3)[1]
+  
+  for (i in 1:3) {
+    # Conversiones de índice
+    centro_i_3km <- floor((centros_i[i] - 1) / 3) + 1
+    centro_j_3km <- floor((centros_j[i] - 1) / 3) + 1
+    
+    # Índices vectorizados
+    s3 <- centro_i_3km + lon3 * (centro_j_3km - 1)
+    s1 <- centros_i[i] + lon1 * (centros_j[i] - 1)
+    s1_3 <- (centros_i[i] * 3 + 2) + lon1_3 * ((centros_j[i] * 3 + 2) - 1)
+    
+    serie_x3 <- X3[centro_i_3km, centro_j_3km, ]
+    serie_x1 <- X1[centros_i[i], centros_j[i], ]
+    serie_x1_3 <- X1_3[(centros_i[i] * 3 + 2), (centros_j[i] * 3 + 2), ]
+
+    df <- data.frame(
+      Tiempo = 1:n_tiempo,
+      X3 = as.vector(serie_x3),
+      X1 = as.vector(serie_x1),
+      X1_3 = as.vector(serie_x1_3)
+    )
+
+    df_melt <- melt(df, id.vars = "Tiempo")
+    df_melt$variable <- factor(df_melt$variable, levels = c("X3", "X1", "X1_3"))
+    
+    g <- ggplot(df_melt, aes(x = Tiempo, y = value, color = variable)) +
+      theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5)) +
+      geom_line(aes(linewidth = variable), alpha = 0.9) +
+      scale_color_manual(
+        values = colores,
+        labels = c(
+          bquote(X[s[.(s3)]]^{(3)}),
+          bquote(X[s[.(s1)]]^{(1)}),
+          bquote(hat(X)[s[.(s1_3)]]^{(1/3)})
+        )
+      ) +
+      scale_linewidth_manual(
+        values = c("X3" = 1, "X1" = 1.1, "X1_3" = 1.2),
+        guide = "none"
+      ) +
+      coord_cartesian(ylim = c(0, y_max)) +
+      labs(
+        title = "",
+        x = "",
+        y = "",
+        color = ""
+      ) +
+      theme_minimal(base_size = 16) +
+      theme(
+        axis.title = element_text(size = 18),
+        axis.text = element_text(size = 16),
+        legend.text = element_text(size = 16),
+        legend.text.align = 0,
+        plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+        legend.position = c(0.02, 0.98),
+        legend.justification = c("left", "top"),
+        legend.background = element_rect(fill = ggplot2::alpha("white", 0.7), color = NA),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white", color = "black", linewidth = 0.5)
+      )
+
+    # Guardar gráfico
+    file_name <- file.path(output_dir, paste0("comparacion_vecinocentral_V", i, ".png"))
+    ggsave(file_name, g, width = 8, height = 6, dpi = 300, bg = "white")
+  }
+}
+```
+
+```{r}
+output_dir_results <- "C:/Users/alonso/Desktop/Taller de Título/imagenes/comparacion_downscaling"
+
+centros_i <- c(14,44,80)
+centros_j <- c(32,47,23)
+graficas_comparacion_campos_downscaling(ws3, ws1, Predictor$Xlb_pred, centros_i, centros_j, output_dir = output_dir_results)
+```
+
